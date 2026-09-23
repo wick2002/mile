@@ -1,0 +1,415 @@
+% MILE: Milestone-Grounded Closed-Loop Imagination — ICML 2027 Draft
+% 编译说明：下载官方 ICML 2027 样式包后替换下面两个宏包的文件名
+%   \usepackage{icml2027}  (投稿用: \usepackage[accepted]{icml2027} 出 camera-ready)
+% 若暂时没有官方样式，可先用 plain article + geometry 编译查看内容。
+\documentclass{article}
+
+% ---- ICML 样式（投稿版，匿名双栏） ----
+% \usepackage{icml2027}
+
+% ---- 临时替代样式（拿到官方 sty 前用这套排版） ----
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{times}
+\usepackage{microtype}
+\usepackage[dvipsnames]{xcolor}
+
+% ---- 通用宏包 ----
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{url}
+
+% ---- 自定义命令 ----
+\newcommand{\mile}{\textsc{MILE}}
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{$\langle$TODO: #1$\rangle$}}}
+\newcommand{\z}{\mathbf{z}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{Think, Verify, Retreat: Milestone-Grounded Closed-Loop Imagination\\
+for Long-Horizon Vision-Language-Action Policies}
+
+% 投稿时替换为 ICML 官方作者格式（\icmlauthor ...）
+\author{Anonymous Author(s)\\Affiliation, Address\\\texttt{email@domain}}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+% ======================================================================
+\begin{abstract}
+Long-horizon manipulation remains the weakest capability of modern Vision-Language-Action (VLA) policies: on the recent RoboDojo benchmark, the strongest generalist policy completes only \TODO{XX}\% of long-horizon tasks, and detailed scoring reveals that partial sub-steps are frequently achieved while full tasks are not---evidence that errors compound across steps rather than arise from a single missing skill. We argue that the root cause is \emph{open-loop execution}: VLA policies map observations to action chunks reactively, without predicting, verifying, or recovering from the consequences of their own actions. We propose \mile{} (\textbf{MI}lestone-grounded closed-\textbf{L}oop imagination and \textbf{E}xecution), a model-based wrapper that turns any chunked VLA policy into a closed-loop agent. \mile{} equips a frozen VLA with three lightweight components: (i) a \emph{milestone extractor} that represents a long-horizon task as a sparse sequence of physically grounded milestone latents, discovered automatically from kinematic and visual cues without sub-task annotation; (ii) a \emph{predictive world model} operating in the VLA's feature space, which verifies candidate action chunks by imagined short-horizon rollouts scored by a learned steps-to-completion value head; and (iii) a \emph{safe-anchor rollback} mechanism that maintains a stack of verified milestones and retreats to the most recent anchor whenever executed trajectories deviate from imagination. We prove that milestone-level re-anchoring converts the multiplicative compounding-error bound of behavior cloning into an additive one over verified segments. On RoboDojo, \mile{} improves long-horizon \TODO{metric} from \TODO{X} to \TODO{X} (\TODO{XX}\% relative) over the DM0.5 base policy, with consistent gains on memory tasks and on randomized scenes, while adding only \TODO{X}M parameters and \TODO{X}ms of latency per decision. Code, models, and evaluation scripts will be released.
+\end{abstract}
+
+% ======================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Vision-Language-Action (VLA) models have scaled rapidly in the past two years, and on narrowly scoped benchmarks such as LIBERO the strongest policies now exceed 98\% success~\cite{libero_x}. Recent comprehensive evaluations, however, tell a different story. On RoboDojo~\cite{robodojo}, which measures 30 policies across 42 simulation tasks in five capability dimensions, the best policy achieves an average success rate of only \TODO{XX}\%---versus 76.03\% for human experts---and the gap is largest precisely in \emph{long-horizon execution}. More telling than the aggregate numbers is the pattern: on long-horizon tasks, policies score substantially higher on intermediate sub-step credit than on full-task success. Robots can pick the cup, and they can stack the cup, but they cannot reliably \emph{pick and then stack}.
+
+This pattern is the signature of \textbf{compounding error}: each step of a behavior-cloned policy introduces a small deviation, and deviations multiply over a horizon of dozens to hundreds of steps. Existing remedies attack individual links of this chain---better backbones, better action decoders, more data---but leave the execution protocol untouched: the policy still acts open-loop, committing to each action chunk with no mechanism to anticipate consequences, detect drift, or recover.
+
+We argue for a complementary view: \textbf{long-horizon failure is a systems problem, not a capacity problem}. A robust long-horizon agent must (a) \emph{imagine} what its action will change, (b) \emph{verify} the imagination against task progress before committing, and (c) \emph{retreat} to a known-good state when execution deviates from plan. None of the four current world-model paradigms for VLA implements this loop completely: world-model post-training uses dynamics only at training time; world-model-as-planner predicts but never verifies; world-model-as-simulator optimizes in imagination but does not correct execution; event-triggered correctors intervene only at isolated decision points such as pre-grasp.
+
+We introduce \mile{} (Milestone-grounded closed-Loop imagination and Execution), a wrapper that closes this loop at the granularity of \textbf{physical milestones}---sparse, automatically discovered events (gripper transitions, contact onsets, kinematic turning points) that segment a long-horizon task into short verified stages. Milestones are the right unit for closing the loop: they are frequent enough to truncate error accumulation, sparse enough to keep verification cheap, and physically grounded enough to be predicted by a lightweight world model operating in the VLA's own feature space.
+
+\noindent\textbf{Contributions.}
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
+  \item \textbf{Milestone representation without annotation.} We present an automatic extractor that discovers sparse, physically meaningful milestones from demonstration trajectories using kinematic and visual-change cues, and show that milestone latents provide a compact, execution-aligned representation of long-horizon tasks.
+  \item \textbf{Verified execution.} A lightweight world model (\TODO{X}M parameters) predicts milestone-conditioned futures in the frozen VLA's feature space; candidate action chunks are ranked by imagined progress (a steps-to-completion value head) before commitment.
+  \item \textbf{Safe-anchor rollback.} A stack of verified milestones defines \emph{heal states} explicitly; deviation beyond a calibrated threshold triggers retreat-and-replan, converting catastrophic task failure into bounded local re-attempts. We show theoretically that this converts the multiplicative compounding-error bound of behavior cloning into an additive bound over verified segments.
+  \item \textbf{Comprehensive evaluation.} On RoboDojo (long-horizon and memory dimensions), \mile{} improves \TODO{metric} by \TODO{XX}\% relative over DM0.5 and transfers to $\pi_0$ unchanged, with ablations isolating the contribution of verification and rollback, and a failure-taxonomy analysis showing which long-horizon failure modes are repaired.
+\end{enumerate}
+
+% ======================================================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Vision-Language-Action models.}
+VLA policies extend vision-language models with action tokens or diffusion/flow-matching action decoders~\cite{rt2,openvla,pi0,univla,groot,dm05}. Despite architectural diversity, the execution protocol is shared: reactive, open-loop action chunking conditioned on current observation and instruction. Our work is orthogonal---\mile{} is a base-agnostic wrapper, and we demonstrate it on two bases (DM0.5, $\pi_0$).
+
+\paragraph{World models as training objectives.}
+UniVLA~\cite{univla} and CauVA~\cite{cauva} show that causal-dynamics modeling is a strong post-training objective for VLAs, especially for long-horizon tasks. These methods internalize dynamics into the policy but do not \emph{use} prediction at execution time; \mile{} is complementary and can sit on top of such backbones.
+
+\paragraph{World models as planners.}
+StructVLA~\cite{structvla} replaces dense rollouts with sparse structured frames, and Act2Goal~\cite{act2goal} generates intermediate visual states for goal-conditioned control; AHEAD~\cite{ahead} predicts future latents for dynamic grasping with a frozen VLA. All predict, none verify: an erroneous imagination steers execution astray. \mile{}'s milestone latents borrow StructVLA's insight (sparsity with kinematic grounding) but serve a closed-loop verification role rather than a one-shot planning role.
+
+\paragraph{World models as simulators.}
+WoVR~\cite{wovr}, RISE~\cite{rise}, and GigaBrain~\cite{gigabrain} optimize policies inside learned imagination, with WoVR's keyframe-initialized rollouts mitigating hallucination. Our value head follows GigaBrain's finding that jointly predicting future states and steps-to-completion outperforms either objective alone; unlike these methods, \mile{} performs RL-free, inference-time verification and needs no on-policy imagined training.
+
+\paragraph{Execution-time correction and emergent retry.}
+World-in-Loop~\cite{worldinloop} triggers a corrector at isolated events (e.g., pre-grasp) and rolls back to a heuristic heal state; RB-VLA~\cite{rbvla} maintains a persistent belief state. \mile{} generalizes both: verification is triggered at every milestone boundary (a full coverage of task stages), and rollback targets are defined \emph{structurally} by the verified-milestone stack rather than heuristically. A complementary line of evidence suggests that retry-and-correct behavior can \emph{emerge} from large-scale human-data pretraining~\cite{liber0}. Emergent retry, however, offers no triggering guarantee, no defined retreat target, and no error bound, and it presupposes a data scale inaccessible to most laboratories; \mile{} instead provides a lightweight ($\sim$35M parameters), provable, and base-agnostic mechanism that is orthogonal to---and composable with---such emergent abilities.
+
+\paragraph{Long-horizon evaluation.}
+RoboDojo~\cite{robodojo} provides the first unified sim-and-real protocol with a public leaderboard, five capability dimensions, and per-sub-step scoring; its finding that long-horizon \emph{scores} exceed long-horizon \emph{success rates} is direct evidence of compounding error and motivates our design. LIBERO-X~\cite{libero_x} and CALVIN~\cite{calvin} serve as supplementary benchmarks.
+
+% ======================================================================
+\section{Preliminaries and Problem Statement}
+\label{sec:prelim}
+
+\paragraph{Setting.}
+A language-conditioned manipulation task is a POMDP $(\mathcal{S}, \mathcal{A}, \mathcal{O}, T, \rho, l)$ with instruction $l$. A chunked VLA policy $\pi_\theta$ maps an observation $o_t$ (multi-view RGB, proprioception) and $l$ to an action chunk $a_{t:t+H} = \pi_\theta(o_t, l)$, executed for $H$ steps before re-querying. Long-horizon tasks decompose into $K$ semantically ordered stages; success requires all stages completed in order.
+
+\paragraph{Compounding error.}
+Let $\epsilon$ be the per-step distribution-shift error of behavior cloning. Standard analysis~\cite{ross2011} bounds the divergence between $\pi_\theta$ and expert state distributions by $O(H_{\mathrm{task}} \cdot \epsilon)$ (linear in the task horizon), with \emph{success} (a conjunction over all stages) decaying multiplicatively:
+\begin{equation}
+P(\mathrm{success}) \;\le\; \prod_{k=1}^{K}\big(1 - h_k \epsilon\big) \;\approx\; 1 - \epsilon \textstyle\sum_k h_k .
+\label{eq:compounding}
+\end{equation}
+For long horizons, $h_k \epsilon \ll 1$ fails and success collapses. Section~\ref{sec:theory} shows how verified re-anchoring truncates each $h_k$ to a bounded, verified segment length.
+
+% ======================================================================
+\section{\mile{}: Milestone-Grounded Closed-Loop Imagination}
+\label{sec:method}
+
+\mile{} wraps a frozen VLA $\pi_\theta$ with three components: a milestone extractor $\mathcal{M}$, a milestone-conditioned world model $p_\phi$, and an execution controller implementing verify-then-act with safe-anchor rollback. Figure~\ref{fig:overview} gives an overview.
+
+\begin{figure}[t]
+  \centering
+  % \includegraphics[width=\columnwidth]{figures/overview.pdf}
+  \fbox{\parbox{0.9\columnwidth}{\centering\vspace{3em}\TODO{Figure 1: system overview --- extractor, WM+value head, verify-then-act controller, rollback stack}\vspace{3em}}}
+  \caption{Overview of \mile{}. \TODO{caption}}
+  \label{fig:overview}
+\end{figure}
+
+\subsection{Automatic milestone extraction}
+\label{sec:extractor}
+
+Given a demonstration trajectory $\tau = (o_0, a_0, \dots, o_T)$, we extract a sparse milestone index set $\mathcal{M}(\tau) = \{t_1, \dots, t_K\}$ from three complementary cues:
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
+  \item \textbf{Kinematic events} $c^{\mathrm{kin}}_t$: gripper aperture transitions (open$\leftrightarrow$close crossings), joint-velocity turning points (sign changes in the dominant principal component of end-effector velocity).
+  \item \textbf{Contact/progress events} $c^{\mathrm{con}}_t$: sharp changes in predicted contact probability (from a small probe trained on proprioception, or force readings where available).
+  \item \textbf{Visual-change events} $c^{\mathrm{vis}}_t$: local maxima of frame-to-frame latent distance $\|f(o_{t}) - f(o_{t-1})\|$ in the frozen VLA's visual encoder $f$, restricted to instruction-relevant regions via the VLA's cross-attention map.
+\end{enumerate}
+Candidate events are pooled with a minimum separation $\Delta$ and ranked by a consensus score
+\begin{equation}
+s_t = \alpha\, c^{\mathrm{kin}}_t + \beta\, c^{\mathrm{con}}_t + \gamma\, c^{\mathrm{vis}}_t ;
+\end{equation}
+the top-$K$ indices (with $K$ estimated per task family from demonstrations) define milestones. Each milestone $m_k$ is represented as a latent $\z_k = f(o_{t_k})$ plus its stage descriptor $\ell_k$ (from the instruction template, e.g., ``\emph{after picking X}''). No human sub-task annotation is required; when task intermediate-step signals are available (as in RoboDojo's sub-step scoring), they are used only as weak supervision to calibrate thresholds $(\alpha, \beta, \gamma, \Delta)$.
+
+\subsection{Milestone-conditioned world model and progress value}
+\label{sec:wm}
+
+The world model $p_\phi$ predicts future feature-space states conditioned on the current observation embedding and a candidate action chunk:
+\begin{equation}
+\hat{\z}_{t+k} \sim p_\phi\big(\cdot \mid \z_t,\, a_{t:t+k},\, \ell_{k+1}\big).
+\end{equation}
+We implement $p_\phi$ as a \TODO{4-layer, $d{=}1024$} Transformer with per-token motion conditioning~\cite{ahead}, trained with masked latent prediction on demonstration data plus \TODO{Open X-Embodiment subset}. Following GigaBrain~\cite{gigabrain}, $p_\phi$ shares a backbone with a \textbf{progress value head} $v_\psi(\z, \ell_K)$ predicting normalized steps-to-completion; joint training of prediction and value is essential (ablation in \S\ref{sec:ablation}).
+
+\subsection{Verified execution with safe-anchor rollback}
+\label{sec:controller}
+
+At each decision point, the controller operates as follows (Algorithm~\ref{alg:mile}):
+
+\begin{algorithm}[t]
+\caption{\mile{} execution controller}
+\label{alg:mile}
+\begin{algorithmic}[1]
+\State \textbf{Input:} frozen VLA $\pi_\theta$; world model $p_\phi$; value head $v_\psi$; milestone sequence $\{(\z_k, \ell_k)\}_{k=1}^{K}$; thresholds $r, \tau_J$; patience $n$
+\State $\mathcal{V} \gets \emptyset$ \Comment{verified-milestone stack}
+\For{each decision point $t$}
+  \State $m_k \gets \mathrm{top}(\mathcal{V})$;\quad target $\z_{k+1}$
+  \State $\{a^{(c)}_{t:t+H}\}_{c=1}^{C} \sim \pi_\theta(o_t, l)$ \Comment{candidate chunks}
+  \For{$c = 1 \dots C$}
+    \State $\hat{\z}^{(c)}_{t+H} \sim p_\phi(\cdot \mid \z_t, a^{(c)}_{t:t+H}, \ell_{k+1})$ \Comment{imagination}
+    \State $J(c) \gets \cos\big(\hat{\z}^{(c)}_{t+H}, \z_{k+1}\big) + \lambda\,[v_\psi(\z_t) - v_\psi(\hat{\z}^{(c)}_{t+H})] - \eta\, u_\phi(\hat{\z}^{(c)}_{t+H})$
+  \EndFor
+  \State $c^\ast \gets \argmax_c J(c)$
+  \If{$J(c^\ast) > \tau_J$}
+    \State execute $a^{(c^\ast)}_{t:t+H}$
+  \Else
+    \State re-sample or retreat to $\mathrm{top}(\mathcal{V})$ \Comment{no verified candidate}
+  \EndIf
+  \If{realized $\z_{t+H}$ within radius $r$ of $\z_{k+1}$}
+    \State push $m_{k+1}$ onto $\mathcal{V}$ \Comment{milestone verified}
+  \ElsIf{deviation $> r$ for $n$ consecutive decisions}
+    \State retreat to state of $\mathrm{top}(\mathcal{V})$; clear unverified suffix \Comment{rollback}
+  \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
+  \item \textbf{Milestone tracking.} Maintain a stack $\mathcal{V}$ of \emph{verified} milestones. The next target is $\z_{k+1}$, where $m_k = \mathrm{top}(\mathcal{V})$.
+  \item \textbf{Candidate generation.} Sample $C$ candidate chunks from the (stochastic) base policy.
+  \item \textbf{Imagination.} Roll out $p_\phi$ for each candidate to obtain $\hat{\z}^{(c)}_{t+H}$.
+  \item \textbf{Verification scoring.} Rank candidates by
+  \begin{equation}
+  J(c) = \underbrace{\cos\big(\hat{\z}^{(c)}_{t+H},\, \z_{k+1}\big)}_{\text{milestone alignment}} + \lambda \underbrace{\big[v_\psi(\z_t) - v_\psi(\hat{\z}^{(c)}_{t+H})\big]}_{\text{progress}} - \eta \underbrace{u_\phi\big(\hat{\z}^{(c)}_{t+H}\big)}_{\text{uncertainty}},
+  \label{eq:score}
+  \end{equation}
+  where $u_\phi$ is an ensemble/disagreement-based uncertainty estimate. Execute $\argmax_c J(c)$ only if $J(c^\ast) > \tau_J$ (threshold calibrated on validation rollouts).
+  \item \textbf{Advance or rollback.} After execution, if the realized latent is within radius $r$ of a verified milestone, push it onto $\mathcal{V}$. If the realized latent deviates from the predicted next milestone beyond radius $r$ for $n$ consecutive decisions, \textbf{retreat}: reset (physically or via the best re-approach policy) to the state of $\mathrm{top}(\mathcal{V})$, clear the unverified suffix, and re-plan from that anchor.
+\end{enumerate}
+
+The full controller requires no retraining of $\pi_\theta$: only $p_\phi$, $v_\psi$, and the extractor thresholds are learned (\TODO{X}M parameters total).
+
+\subsection{Theory: verified re-anchoring truncates error compounding}
+\label{sec:theory}
+
+\begin{proposition}[informal]
+\label{prop:main}
+Let the task be segmented into $K$ stages by milestones, with per-step shift error $\epsilon$ and stage length $h$. Suppose the verifier accepts an executed segment only if its terminal-state deviation from the target milestone is below radius $r$, and rollback restores a state within the $r$-neighborhood of the last verified milestone with probability at least $1-\delta$. Then task success is bounded below by
+\begin{equation}
+P(\mathrm{success}) \;\ge\; \prod_{k=1}^{K} \Big[\, (1-\delta)\, P\big(\text{segment } k \text{ accepted}\big) \Big],
+\qquad
+P(\text{accepted}) \;\ge\; 1 - \frac{h\epsilon}{r}\ \ \text{(first-order)},
+\end{equation}
+so that per-stage error enters \textbf{additively relative to the acceptance radius} rather than compounding multiplicatively across the full horizon $Kh$ (cf.\ Eq.~\ref{eq:compounding}). A naive open-loop policy has $r = \infty$ (no truncation), recovering the standard bound.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+Induction over stages with a union bound over verification failures; deviation within an accepted segment is a martingale with bounded increments, so terminal deviation concentrates around $h\epsilon$; acceptance at radius $r$ truncates the tail. Full proof in Appendix~\ref{app:proof}.
+\end{proof}
+
+\begin{remark}
+The proposition makes the design trade-offs explicit: smaller $r$ (stricter verification) tightens the bound but increases rollback frequency and latency; milestone sparsity controls $h$. Section~\ref{sec:ablation} ablates both.
+\end{remark}
+
+% ======================================================================
+\section{Experiments}
+\label{sec:exp}
+
+\subsection{Setup}
+\label{sec:setup}
+
+\paragraph{Benchmark.}
+RoboDojo simulation suite~\cite{robodojo}: 42 tasks in five dimensions (generalization 12, memory 6, precision 8, long-horizon 8, open-semantic 8), 50 episodes per task (25 standard + 25 randomized scenes), official sub-step--sensitive score and success rate, co-train (clean2random) protocol with 50 clean demonstrations per task. Training data: official 3{,}500 demonstration trajectories (1.86M frames).
+
+\paragraph{Base policies.}
+\textbf{DM0.5}~\cite{dm05} (primary; leaderboard top) and $\pi_0$~\cite{pi0} (secondary; cross-base validation). For each base we compare: (i) base policy as-is; (ii) base + \mile{}; (iii) base + \mile{} $-$ verification; (iv) base + \mile{} $-$ rollback.
+
+\paragraph{Baselines.}
+Public leaderboard numbers (2026-09-17 snapshot) for Liber-0 Preview~\cite{liber0} (closed-source, current rank 1: 30.74 score / 25.52\% success), GPT-6-Astra~\cite{gpt6astra} (official System-2 planning baseline), GalaxeaVLA, Hy-Embodied-0.5-VLA, $\pi_{0.5}$, X-VLA; plus \TODO{World-in-Loop / StructVLA adapted as wrapper baselines, if reproducible}. Since Liber-0 Preview is not publicly available, we compare against its official leaderboard numbers without re-running it.
+
+\paragraph{\mile{} configuration.}
+$C = \TODO{X}$ candidates, $\lambda = \TODO{X}$, $\eta = \TODO{X}$, $r = \TODO{X}$, $\tau_J = \TODO{X}$, $n = \TODO{X}$. $p_\phi$/$v_\psi$: \TODO{X}M params, trained \TODO{X} steps on \TODO{X} GPUs.
+
+\subsection{Main results}
+
+\begin{table}[t]
+\centering
+\caption{RoboDojo long-horizon and memory dimensions (score / success \%). \TODO{fill}}
+\label{tab:main}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Method & LH (std) & LH (rand) & Mem (std) & Mem (rand) \\
+\midrule
+DM0.5                & 33.70/19.50 & \TODO{} & 47.74/\TODO{} & \TODO{} \\
+DM0.5 + \mile{}      & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+$\pi_0$              & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+$\pi_0$ + \mile{}    & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+\midrule
+Liber-0 Preview (board, closed) & 45.98/33.17 & --- & 37.77/37.33 & --- \\
+GPT-6-Astra (board)  & 21.45/8.25 & --- & 43.04/38.67 & --- \\
+GalaxeaVLA (board)   & 44.12/32.25 & --- & 8.61/7.33 & --- \\
+$\pi_{0.5}$ (board)  & 23.54/14.67 & --- & 5.78/4.56 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{All five dimensions, average score / success \% (DM0.5 base). \TODO{fill}}
+\label{tab:alldim}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Method & Gen & Mem & Prec & LH & Open-Sem \\
+\midrule
+DM0.5           & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+DM0.5 + \mile{} & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Key findings to report:}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+  \item \mile{}'s improvement concentrates on long-horizon and memory dimensions, with no degradation on precision/generalization---evidence that gains come from the execution loop, not from better perception. \TODO{}
+  \item Gains are \emph{larger on randomized scenes} than standard ones, consistent with the hypothesis that re-anchoring mitigates distribution-shift accumulation. \TODO{}
+  \item The wrapper transfers from DM0.5 to $\pi_0$ with only extractor-threshold recalibration. \TODO{}
+\end{itemize}
+
+\subsection{Ablations}
+\label{sec:ablation}
+
+\begin{table}[t]
+\centering
+\caption{Ablations (long-horizon dimension, DM0.5 base). \TODO{fill}}
+\label{tab:ablation}
+\small
+\begin{tabular}{lccc}
+\toprule
+Variant & Score & Success & Latency/decision \\
+\midrule
+Full \mile{}                                  & \TODO{} & \TODO{} & \TODO{} \\
+$-$ verification ($C{=}1$, no scoring)        & \TODO{} & \TODO{} & \TODO{} \\
+$-$ rollback                                  & \TODO{} & \TODO{} & \TODO{} \\
+$-$ milestones (dense rollout, horizon $H'$)  & \TODO{} & \TODO{} & \TODO{} \\
+$-$ joint value training (separate heads)     & \TODO{} & \TODO{} & \TODO{} \\
+Rule-only extractor vs.\ learned              & \TODO{} & \TODO{} & \TODO{} \\
+Acceptance radius $r \in \{r/2, r, 2r\}$      & \TODO{} & \TODO{} & \TODO{} \\
+Milestone stack depth                         & \TODO{} & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.9\columnwidth}{\centering\vspace{3em}\TODO{Figure 2: latency--success trade-off, \mile{} vs.\ World-in-Loop vs.\ WoVR-style full rollouts}\vspace{3em}}}
+  \caption{Latency--success trade-off. \mile{}'s milestone-level triggering achieves \TODO{XX}\% of the rollback benefit at \TODO{X}$\times$ lower latency.}
+  \label{fig:latency}
+\end{figure}
+
+\subsection{Failure taxonomy analysis}
+\label{sec:taxonomy}
+
+Following RoboDojo's analysis protocol, we annotate \TODO{300} failure episodes into four classes: \emph{perceptual aliasing} (progress loss), \emph{execution drift}, \emph{stage-transition failure}, \emph{recovery absence}. Table~\ref{tab:taxonomy} reports per-class failure rates for DM0.5 vs.\ DM0.5+\mile{}: \mile{} reduces recovery-absence failures by \TODO{XX}\% and stage-transition failures by \TODO{XX}\%, but leaves \TODO{class} largely unchanged---pointing to perception-side limits of a frozen base.
+
+\begin{table}[t]
+\centering
+\caption{Failure-taxonomy breakdown (long-horizon tasks). \TODO{fill}}
+\label{tab:taxonomy}
+\small
+\begin{tabular}{lcc}
+\toprule
+Failure class & DM0.5 & DM0.5 + \mile{} \\
+\midrule
+Perceptual aliasing     & \TODO{} & \TODO{} \\
+Execution drift         & \TODO{} & \TODO{} \\
+Stage-transition        & \TODO{} & \TODO{} \\
+Recovery absence        & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Real-world evaluation (optional, rebuttal-ready)}
+\label{sec:real}
+
+Via RoboDojo-RealEval remote evaluation: 18 tasks on ARX X5 / Piper / Piper X, 10 trials per task, blind scoring. \TODO{fill --- submitted W10, expected back by \TODO{date}}.
+
+% ======================================================================
+\section{Limitations}
+\label{sec:limits}
+
+(i) The world model inherits the base's perception; if $f$ fails to distinguish two states (strong perceptual aliasing), verification cannot rescue execution (\S\ref{sec:taxonomy}). (ii) Rollback assumes stages are physically reversible or re-approachable; irreversible operations (cutting, pouring) need one-way milestone flags---we currently exclude \TODO{X} such tasks. (iii) Verification latency, though small (\TODO{X}ms), may matter in highly dynamic scenes; adaptive candidate budgets are future work. (iv) Absolute success rates on RoboDojo remain far below human level; \mile{} narrows but does not close the gap.
+
+% ======================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented \mile{}, a model-based wrapper that turns open-loop VLA policies into closed-loop long-horizon agents by grounding imagination in automatically discovered physical milestones, verifying action chunks before commitment, and retreating to safe anchors on deviation. Both theory (additive vs.\ multiplicative error bounds) and experiments (RoboDojo long-horizon/memory gains on two bases) support the central claim: \emph{long-horizon failure is largely a systems problem, and closing the loop at the right granularity is a cheap and general way to fix it.}
+
+% ======================================================================
+% 参考文献：投稿前替换为正式 .bib（先用内嵌占位条目保证可编译）
+\begin{thebibliography}{99}\small
+\bibitem{robodojo} RoboDojo Team. \emph{RoboDojo: A Unified Sim-and-Real Benchmark for Comprehensive Evaluation of Generalist Robot Manipulation Policies}. arXiv:2607.04434, 2026.
+\bibitem{dm05} Dexmal Team. \emph{DM0.5 Technical Report}. 2026. \TODO{link}
+\bibitem{pi0} Physical Intelligence. \emph{$\pi_0$: A Vision-Language-Action Flow Model for General Robot Control}. 2024.
+\bibitem{rt2} Brohan et al. \emph{RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control}. 2023.
+\bibitem{openvla} Kim et al. \emph{OpenVLA: An Open-Source Vision-Language-Action Model}. 2024.
+\bibitem{groot} NVIDIA. \emph{GR00T N1}. 2025.
+\bibitem{univla} Wang et al. \emph{Unified Vision-Language-Action Model}. ICLR 2026.
+\bibitem{cauva} \emph{Causal World Modeling for Robot Control (CauVA / LingBot-VA)}. RSS 2026.
+\bibitem{structvla} Jin et al. \emph{Beyond Dense Futures: World Models as Structured Planners for Robotic Manipulation (StructVLA)}. arXiv:2603.12553, 2026.
+\bibitem{act2goal} \emph{Act2Goal: From World Model To General Goal-conditioned Policy}. RSS 2026.
+\bibitem{ahead} Jakobsson et al. \emph{Intercepting the Future: Latent-Space Predictive World Model for Dynamic VLA Manipulation (AHEAD)}. arXiv:2606.02486, 2026.
+\bibitem{wovr} Jiang et al. \emph{WoVR: World Models as Reliable Simulators for Post-Training VLA Policies with RL}. arXiv:2602.13977, 2026.
+\bibitem{rise} \emph{RISE: Self-Improving Robot Policy with Compositional World Model}. RSS 2026.
+\bibitem{gigabrain} GigaBrain Team. \emph{GigaBrain-0.5M: a VLA That Learns From World Model-Based Reinforcement Learning}. arXiv 2026.
+\bibitem{worldinloop} Xu et al. \emph{World-in-Loop: Online Correction via Event-Triggered World Models for Robust VLA Policies}. ECCV 2026.
+\bibitem{rbvla} Bagaria et al. \emph{Recursive Belief Vision Language Model (RB-VLA)}. arXiv 2026.
+\bibitem{libero_x} Wang et al. \emph{LIBERO-X: Robustness Litmus for Vision-Language-Action Models}. 2026.
+\bibitem{calvin} Mees et al. \emph{CALVIN: A Benchmark for Language-Conditioned Policy Learning for Long-Horizon Robot Manipulation Tasks}. RA-L 2022.
+\bibitem{ross2011} Ross, Gordon, Bagnell. \emph{A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning (DAgger)}. AISTATS 2011.
+\bibitem{liber0} LiberAI. \emph{Liber-0 Preview} (RoboDojo leaderboard entry, rank 1 as of 2026-09-17; closed-source). 2026. \TODO{official link when released}
+\bibitem{gpt6astra} RoboDojo Team. \emph{GPT-6-Astra System-2 Planning Baseline} (RoboDojo leaderboard). 2026.
+\end{thebibliography}
+
+% ======================================================================
+\appendix
+
+\section{Full proof of Proposition~\ref{prop:main}}
+\label{app:proof}
+\TODO{full proof --- W11}
+
+\section{Milestone extractor details}
+\label{app:extractor}
+Extraction-quality statistics on RoboDojo demonstrations (precision/recall vs.\ intermediate-step signals). \TODO{}
+
+\section{World model architecture and training}
+\label{app:wm}
+Architecture table, training curves, prediction visualizations. \TODO{}
+
+\section{Threshold calibration protocol}
+\label{app:calib}
+Calibration of $(r, \tau_J, \lambda, \eta, n, C)$. \TODO{}
+
+\section{Full 42-task per-task results}
+\label{app:pertask}
+\TODO{}
+
+\section{Evaluation noise analysis}
+\label{app:noise}
+Per-task 50-episode confidence intervals. \TODO{}
+
+\section{Reproducibility statement}
+\label{app:repro}
+Code, checkpoints, and evaluation scripts will be released at \TODO{url}.
+
+\end{document}

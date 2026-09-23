@@ -1,0 +1,65 @@
+# MILE 全局配置（与设计文档 §3.0/§8 一致）
+seed: 42
+
+base:
+  name: dm05
+  # OpenDM HTTP 推理服务地址（docker 启动后）
+  server_url: "http://127.0.0.1:7891"
+  # 本地模式（需要直接进入 OpenDM 容器取特征时）
+  checkpoint: "./checkpoints/DM05-robotwin2-bf16"
+  feature_layer: -2          # VLM 倒数第二层
+  vlm_dim: 2560
+  num_patches: 256
+  action_dim: 14             # RoboDojo/RoboTwin2 双臂
+  chunk_len: 50
+  image_keys: ["images_1", "images_2", "images_3"]
+
+world_model:
+  d_model: 1024
+  n_layers: 4
+  n_heads: 16
+  d_ff: 4096
+  dropout: 0.1
+  action_tokens: 8           # 50 步 chunk 压缩为 8 个 token（Conv1d k=7,s=6）
+  text_tokens: 4
+  n_ensemble: 3              # 不确定性集成头数
+  mask_ratio: 0.2            # 输入 patch 掩码比例
+  loss_weights:
+    latent: 1.0
+    cosine: 0.5
+    value: 0.5
+
+train:
+  lr: 3.0e-4
+  weight_decay: 0.01
+  batch_size: 256
+  max_steps: 60000
+  warmup_steps: 2000
+  bf16: true
+  log_every: 100
+  ckpt_every: 5000
+  out_dir: "./runs/wm_v1"
+  data_dir: "./data/robodojo_demos_latents"
+
+milestones:
+  alpha: 0.333               # 运动学线索权重
+  beta: 0.333                # 接触线索权重
+  gamma: 0.334               # 视觉线索权重
+  min_separation: 100        # 里程碑最小间隔（控制步）
+  k_range: [3, 10]           # 每任务里程碑数量范围
+  use_official_substeps: true  # v1：直接用 RoboDojo 官方子步骤边界
+
+controller:
+  num_candidates: 4          # C
+  lam: 1.0                   # 进度分权重
+  eta: 0.5                   # 不确定性权重
+  tau_J: 0.65                # 执行过线阈值（标定后更新）
+  radius: 0.35               # 里程碑验证半径 r（标定后更新）
+  patience: 2                # 连续偏离容忍次数 n
+  max_pop: 2                 # 连续回退最多弹栈层数
+
+eval:
+  benchmark: robodojo
+  episodes_per_task: 50      # 25 标准 + 25 随机
+  calibration_tasks: 8       # 只在这 8 个任务上调参
+  heldout_tasks: 34          # 其余任务零调参
