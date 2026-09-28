@@ -50,16 +50,31 @@ milestones:
   use_official_substeps: true  # v1：直接用 RoboDojo 官方子步骤边界
 
 controller:
-  num_candidates: 4          # C
+  num_candidates: 4          # C（scaling 曲线扫描 1/2/4/8）
   lam: 1.0                   # 进度分权重
   eta: 0.5                   # 不确定性权重
-  tau_J: 0.65                # 执行过线阈值（标定后更新）
-  radius: 0.35               # 里程碑验证半径 r（标定后更新）
+  tau_J: 0.65                # 兜底值；正式运行以保形校准 τ̂ 为准
+  radius: 0.35               # 里程碑验证半径 r（保形校准中固定）
   patience: 2                # 连续偏离容忍次数 n
   max_pop: 2                 # 连续回退最多弹栈层数
+
+conformal:
+  alpha: 0.05                # 目标误接受率（覆盖率 ≥ 1−α−1/(n+1)）
+  radius: 0.35               # 固定一次，不参与搜索
+  calib_tasks: 8             # 只用这些任务拟合 τ̂
+  min_calib_points: 200      # 标定 rollout 至少收集的 (J,d) 决策点数
+
+self_improve:
+  enabled: true
+  episodes_per_round: 500    # 每轮部署局数 R
+  distill_steps: 500         # 每轮价值头蒸馏步数
+  distill_batch: 64
+  distill_lr: 1.0e-4
+  use_lora: false            # 变体开关：value-head-only vs +LoRA
 
 eval:
   benchmark: robodojo
   episodes_per_task: 50      # 25 标准 + 25 随机
   calibration_tasks: 8       # 只在这 8 个任务上调参
   heldout_tasks: 34          # 其余任务零调参
+  candidate_sweep: [1, 2, 4, 8]  # 计算量-成功率 scaling 曲线
