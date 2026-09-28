@@ -26,6 +26,10 @@ def main() -> None:
     ap.add_argument("--calibrated", default="configs/calibrated.json")
     ap.add_argument("--tasks", nargs="+", required=True)
     ap.add_argument("--open-loop", action="store_true", help="bare base policy")
+    ap.add_argument("--candidates", type=int, default=None,
+                    help="override C for the compute-scaling sweep (1/2/4/8)")
+    ap.add_argument("--recovery-buffer", default=None,
+                    help="path to save collected recovery segments (.pkl)")
     ap.add_argument("--out", default="results/eval.jsonl")
     args = ap.parse_args()
 
@@ -33,11 +37,16 @@ def main() -> None:
     base_client = BasePolicyClient(DM05Config(server_url=cfg["base"]["server_url"]))
 
     controller_factory = None
+    buffer = None
     if not args.open_loop:
+        from mile.controller.recovery import RecoveryBuffer
+
         with open(args.banks, "rb") as f:
             banks = pickle.load(f)
         with open(args.calibrated) as f:
             best = json.load(f)
+
+        buffer = RecoveryBuffer()
 
         wm = LatentWorldModel(
             num_patches=cfg["base"]["num_patches"], vlm_dim=cfg["base"]["vlm_dim"],
@@ -55,7 +64,7 @@ def main() -> None:
         wm.eval().cuda()
 
         ccfg = ControllerConfig(
-            num_candidates=cfg["controller"]["num_candidates"],
+            num_candidates=args.candidates or cfg["controller"]["num_candidates"],
             lam=best.get("lam", cfg["controller"]["lam"]),
             eta=best.get("eta", cfg["controller"]["eta"]),
             tau_J=best.get("tau_J", cfg["controller"]["tau_J"]),
@@ -65,7 +74,8 @@ def main() -> None:
         )
 
         def controller_factory(task_id: str) -> MILEController:
-            return MILEController(base_client, wm, banks[task_id], ccfg)
+            return MILEController(base_client, wm, banks[task_id], ccfg,
+                                  recovery_buffer=buffer)
 
     def env_factory(task_id: str):
         # TODO(server): return mile.env.robodojo_env.RoboDojoEnv(task_id)
@@ -73,6 +83,12 @@ def main() -> None:
 
     evaluate(env_factory, args.tasks, controller_factory, base_client,
              episodes_per_task=cfg["eval"]["episodes_per_task"], out_path=args.out)
+
+    if buffer is not None and args.recovery_buffer:
+        import pickle as _pkl
+        with open(args.recovery_buffer, "wb") as f:
+            _pkl.dump(buffer, f)
+        print(f"[eval] recovery buffer ({len(buffer)} segments) -> {args.recovery_buffer}")
 
 
 if __name__ == "__main__":
