@@ -29,6 +29,9 @@ def train_wm(cfg: dict) -> Path:
     wm_cfg = cfg["world_model"]
     tr_cfg = cfg["train"]
     base_cfg = cfg["base"]
+    # WM imagination window = executed horizon (25 under the RoboDojo adapter),
+    # NOT the policy's native 50-step chunk.
+    window = wm_cfg.get("window", base_cfg.get("exec_horizon", base_cfg["chunk_len"]))
 
     model = LatentWorldModel(
         num_patches=base_cfg["num_patches"],
@@ -39,7 +42,7 @@ def train_wm(cfg: dict) -> Path:
         d_ff=wm_cfg["d_ff"],
         dropout=wm_cfg["dropout"],
         action_dim=base_cfg["action_dim"],
-        chunk_len=base_cfg["chunk_len"],
+        chunk_len=window,
         action_tokens=wm_cfg["action_tokens"],
         text_tokens=wm_cfg["text_tokens"],
         n_ensemble=wm_cfg["n_ensemble"],
@@ -49,7 +52,7 @@ def train_wm(cfg: dict) -> Path:
     print(f"[train_wm] params: {n_params:.1f}M")
 
     loader = make_dataloader(
-        tr_cfg["data_dir"], chunk_len=base_cfg["chunk_len"],
+        tr_cfg["data_dir"], chunk_len=window,
         batch_size=tr_cfg["batch_size"],
     )
     opt = torch.optim.AdamW(model.parameters(), lr=tr_cfg["lr"],
