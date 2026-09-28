@@ -40,9 +40,11 @@ def run_episode(env, controller: MILEController | None, base_client,
             env.restore_state(rb["env_snapshot"])
             continue
 
-        # execute the chunk step by step
+        # execute the chunk step by step (record steps for recovery data)
         for a in chunk:
-            env.step(a)
+            obs = env.step(a)
+            if controller is not None:
+                controller.record_step(obs["patch_tokens"], a)
 
         if controller is not None:
             realized = obs["patch_tokens"]  # refresh from new obs in practice

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from ..extractor.extractor import MilestoneBank
+from .recovery import RecoveryBuffer, RecoverySegment
 from .scoring import milestone_reached, pick_best, score_candidates
 from .stack import VerifiedEntry, VerifiedStack
 
@@ -37,6 +38,7 @@ class MILEController:
         world_model,                 # LatentWorldModel (eval mode)
         bank: MilestoneBank,         # milestone bank for the current task
         cfg: ControllerConfig,
+        recovery_buffer: RecoveryBuffer | None = None,  # self-improvement (§4.6)
     ) -> None:
         self.base = base_client
         self.wm = world_model
@@ -45,11 +47,46 @@ class MILEController:
         self.stack = VerifiedStack(max_pop=cfg.max_pop)
         self.deviation_streak = 0
         self.one_way_ranks: set[int] = set()   # irreversible stages: verify-only
+        # ---- hindsight recovery recording ----
+        self.buffer = recovery_buffer
+        self._pending: dict | None = None      # segment being recorded after a rollback
 
     # ----------------------------------------------------------- episode
     def reset(self) -> None:
         self.stack.reset()
         self.deviation_streak = 0
+        self._pending = None
+
+    # ------------------------------------------- recovery segment hooks
+    def _begin_recording(self, anchor_rank: int) -> None:
+        """Start recording after a rollback: if we later reach the next
+        milestone, this segment becomes hindsight recovery data."""
+        if self.buffer is None:
+            return
+        self._pending = {"anchor_rank": anchor_rank, "latents": [], "actions": []}
+
+    def record_step(self, latent: np.ndarray, action: np.ndarray) -> None:
+        """Record one executed step while a recovery segment is pending.
+        Call this for every step executed between rollback and next verify."""
+        if self._pending is not None:
+            self._pending["latents"].append(latent)
+            self._pending["actions"].append(action)
+
+    def _commit_recording(self, reached_rank: int, task_id: str = "") -> None:
+        if self._pending is None or self.buffer is None:
+            return
+        if len(self._pending["latents"]) > 0:
+            self.buffer.add(RecoverySegment(
+                task_id=task_id,
+                anchor_rank=self._pending["anchor_rank"],
+                latents=np.stack(self._pending["latents"]),
+                actions=np.stack(self._pending["actions"]),
+                reached_rank=reached_rank,
+            ))
+        self._pending = None
+
+    def _discard_recording(self) -> None:
+        self._pending = None
 
     # ------------------------------------------------------------- step
     @torch.no_grad()
@@ -117,6 +154,7 @@ class MILEController:
                 rank=k_next, latent=realized_latent, env_snapshot=env_snapshot,
             ))
             self.deviation_streak = 0
+            self._commit_recording(reached_rank=k_next, task_id=self.bank.task_id)
             return {"event": "verified", "rank": k_next, "dist": dist}
 
         self.deviation_streak += 1
@@ -127,13 +165,16 @@ class MILEController:
     # --------------------------------------------------------- rollback
     def rollback(self) -> dict:
         """Retreat to the most recent verified milestone (stack top)."""
-        if k_irreversible := self._current_stage_is_one_way():
+        if self._current_stage_is_one_way():
+            self._discard_recording()
             return {"event": "abort", "reason": "one-way stage"}
 
         entry = self.stack.rollback_target()
         if entry is None:
+            self._discard_recording()
             return {"event": "abort", "reason": "no verified anchor"}
         self.deviation_streak = 0
+        self._begin_recording(anchor_rank=entry.rank)   # hindsight recovery (§4.6)
         return {
             "event": "rollback_to",
             "rank": entry.rank,
