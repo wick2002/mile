@@ -58,12 +58,17 @@ MILE is developed and evaluated on Ubuntu 22.04 + NVIDIA RTX 4090/A100.
 We recommend running inside the official Docker images of our dependencies.
 
 ```bash
-# 1. Base policy: DM0.5 (OpenDM)
+# 1. Base policy: DM0.5 (OpenDM) + official RoboDojo-Sim fine-tuned checkpoint
 git clone https://github.com/dexmal/opendm.git
 docker run -it --rm --gpus all --network host --shm-size=16g \
   -v $PWD:/app/opendm -w /app/opendm dexmal/opendm:latest /bin/bash
-modelscope download --model Dexmal/DM05-robotwin2-bf16 \
-  --local_dir ./checkpoints/DM05-robotwin2-bf16
+# DM05-MEM-Robodojo-Sim (Dexmal, 2026-08-26): the exact leaderboard checkpoint
+# (24.90 score / 19.34% SR). The directory MUST contain its norm_stats.json.
+pip install -U "huggingface_hub[cli]"
+hf download Dexmal/DM05-MEM-Robodojo-Sim \
+  --local-dir ./checkpoints/DM05-MEM-Robodojo-Sim
+# ModelScope mirror: modelscope download --model Dexmal/DM05-MEM-Robodojo-Sim \
+#   --local_dir ./checkpoints/DM05-MEM-Robodojo-Sim
 
 # 2. Benchmark: RoboDojo (Isaac Sim / Isaac Lab)
 git clone https://github.com/RoboDojo-Benchmark/RoboDojo.git
@@ -80,9 +85,17 @@ Launch the frozen base policy inference service:
 
 ```bash
 script/dm05_launcher.sh --task inference --nproc_per_node 1 \
-  --model-config.model-name-or-path ./checkpoints/DM05-robotwin2-bf16 \
+  --model-config.model-name-or-path ./checkpoints/DM05-MEM-Robodojo-Sim \
   --model-config.chunk-size 50 --inference-config.port 7891
 ```
+
+Official RoboDojo-Sim protocol for this checkpoint (kept identical in MILE so
+our numbers are comparable to the leaderboard):
+camera order head / left-wrist / right-wrist; absolute 14-DoF joint-position
+actions; 50-step chunks with **only the first 25 steps executed** per decision
+(`base.exec_horizon: 25` in `configs/default.yaml`); up to 20 head-camera
+history frames at 1 FPS, left-padded at episode start. Policy integration goes
+through XPolicyLab (see XPolicyLab PR #101; if merged, use its main branch).
 
 ## Quickstart
 

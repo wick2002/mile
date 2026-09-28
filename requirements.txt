@@ -45,7 +45,8 @@ Pillow>=10.0             # 多路相机图像的 JPEG 编解码（multipart 打�
 #
 # 3) OpenDM 推理服务（DM0.5 基座）
 #    docker pull 官方镜像（github.com/dexmal/opendm），
-#    启动后暴露 /process_frame；W1 首日验证 DM05-robotwin2 SFT 权重可直接复用。
+#    启动后暴露 /process_frame；基座权重用官方 RoboDojo 微调检查点
+#    Dexmal/DM05-MEM-Robodojo-Sim（HF/ModelScope，含 norm_stats.json）。
 #
 # 4) （可选）RealEval 远程真机评测账号——W10 前在 RoboDojo 官网注册排队。
 # ============================================================================
