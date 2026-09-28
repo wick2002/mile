@@ -20,11 +20,11 @@
 
 Modern Vision-Language-Action (VLA) policies execute **open-loop**: they map observations to action chunks reactively, with no mechanism to anticipate consequences, detect drift, or recover from their own mistakes. On the [RoboDojo](https://robodojo-benchmark.com/) benchmark this shows up as a characteristic failure pattern — policies earn substantial *partial* credit on long-horizon tasks but rarely complete them end-to-end, because small errors compound across steps.
 
-**MILE** (Milestone-grounded closed-**L**oop imagination and **E**xecution) is a lightweight, **base-agnostic wrapper** that closes this loop at the granularity of physical milestones:
+**MILE** (Milestone-grounded closed-**L**oop imagination and **E**xecution) is a framework for **spending test-time compute in embodied policies** — a lightweight, **base-agnostic wrapper** that closes the execution loop at the granularity of physical milestones:
 
 1. **Milestone extraction** — long-horizon tasks are segmented into short stages by sparse, physically grounded milestones (gripper transitions, contact onsets, visual-change events), discovered automatically from demonstrations *without sub-task annotation*;
 2. **Imagination** — a ~30M-parameter latent world model predicts, in the frozen VLA's own feature space, the outcome of each candidate action chunk, scored by a jointly trained steps-to-completion value head;
-3. **Verification & rollback** — only candidates whose imagined outcome passes verification are executed; a stack of verified milestones defines safe anchors, and deviation triggers retreat-and-replan.
+3. **Conformal verification & rollback** — candidates are executed only if they pass a **conformally calibrated** acceptance test (accepted segments terminate within the verification radius with probability ≥ 1−α, distribution-free, finite-sample); a verified-milestone stack defines safe anchors, deviation triggers retreat-and-replan, and every retreat becomes hindsight-labeled **recovery data** for reward-free self-improvement.
 
 The base policy stays **completely frozen**. MILE trains only ~35M parameters.
 
@@ -132,7 +132,10 @@ mile/
 │   ├── env/robodojo_env.py     # Isaac Lab wrapper: state save/restore
 │   └── scripts/                # S1–S4 entry points
 └── docs/SETUP_zh.md            # 中文部署与接口说明
+    docs/CODE_GUIDE_zh.md       # 逐文件代码详解（中文）
 ```
+
+> 📖 Per-file code walkthrough (Chinese): [docs/CODE_GUIDE_zh.md](docs/CODE_GUIDE_zh.md)
 
 ## Method in 60 Seconds
 

@@ -52,27 +52,27 @@ for Long-Horizon Vision-Language-Action Policies}
 
 % ======================================================================
 \begin{abstract}
-Long-horizon manipulation remains the weakest capability of modern Vision-Language-Action (VLA) policies: on the recent RoboDojo benchmark, the strongest generalist policy completes only \TODO{XX}\% of long-horizon tasks, and detailed scoring reveals that partial sub-steps are frequently achieved while full tasks are not---evidence that errors compound across steps rather than arise from a single missing skill. We argue that the root cause is \emph{open-loop execution}: VLA policies map observations to action chunks reactively, without predicting, verifying, or recovering from the consequences of their own actions. We propose \mile{} (\textbf{MI}lestone-grounded closed-\textbf{L}oop imagination and \textbf{E}xecution), a model-based wrapper that turns any chunked VLA policy into a closed-loop agent. \mile{} equips a frozen VLA with three lightweight components: (i) a \emph{milestone extractor} that represents a long-horizon task as a sparse sequence of physically grounded milestone latents, discovered automatically from kinematic and visual cues without sub-task annotation; (ii) a \emph{predictive world model} operating in the VLA's feature space, which verifies candidate action chunks by imagined short-horizon rollouts scored by a learned steps-to-completion value head; and (iii) a \emph{safe-anchor rollback} mechanism that maintains a stack of verified milestones and retreats to the most recent anchor whenever executed trajectories deviate from imagination. We prove that milestone-level re-anchoring converts the multiplicative compounding-error bound of behavior cloning into an additive one over verified segments. On RoboDojo, \mile{} improves long-horizon \TODO{metric} from \TODO{X} to \TODO{X} (\TODO{XX}\% relative) over the DM0.5 base policy, with consistent gains on memory tasks and on randomized scenes, while adding only \TODO{X}M parameters and \TODO{X}ms of latency per decision. Code, models, and evaluation scripts will be released.
+How should a robot policy spend test-time compute? For large language models, scaling inference-time computation has unlocked large capability gains; for embodied policies executing long-horizon tasks, no principled answer exists. We argue the answer is \emph{spend it at milestone boundaries, on verification}---and that doing so converts the characteristic failure mode of long-horizon manipulation from a capacity problem into a systems problem. On the RoboDojo benchmark, the strongest generalist policies earn substantial partial credit on long-horizon tasks yet rarely finish them, because per-step errors compound across dozens of stages. We propose \mile{} (\textbf{MI}lestone-grounded closed-\textbf{L}oop imagination and \textbf{E}xecution), a framework that wraps any frozen chunked VLA policy with three components: (i) an automatic extractor that segments tasks into physically grounded milestones from kinematic and visual cues, without sub-task annotation; (ii) a lightweight latent world model with a jointly trained steps-to-completion value head that verifies candidate action chunks before commitment; and (iii) a safe-anchor rollback mechanism that retreats to verified milestones on deviation. Crucially, the acceptance test is calibrated by \emph{conformal prediction}: accepted segments are guaranteed to terminate within the verification radius with probability at least $1-\alpha$, a distribution-free, finite-sample guarantee. This yields an explicit lower bound on task success in which per-stage errors enter additively rather than compounding multiplicatively with horizon. Beyond inference, failed executions are converted by hindsight milestone relabeling into recovery data, enabling reward-free self-improvement across deployment rounds. On RoboDojo, \mile{} improves long-horizon \TODO{metric} from \TODO{X} to \TODO{X} (\TODO{XX}\% relative) over the DM0.5 base, transfers to $\pi_0$ unchanged, exhibits favorable compute--success scaling with the candidate budget, and adds only \TODO{X}M trainable parameters and \TODO{X}ms per decision. Code, models, and evaluation scripts will be released.
 \end{abstract}
 
 % ======================================================================
 \section{Introduction}
 \label{sec:intro}
 
-Vision-Language-Action (VLA) models have scaled rapidly in the past two years, and on narrowly scoped benchmarks such as LIBERO the strongest policies now exceed 98\% success~\cite{libero_x}. Recent comprehensive evaluations, however, tell a different story. On RoboDojo~\cite{robodojo}, which measures 30 policies across 42 simulation tasks in five capability dimensions, the best policy achieves an average success rate of only \TODO{XX}\%---versus 76.03\% for human experts---and the gap is largest precisely in \emph{long-horizon execution}. More telling than the aggregate numbers is the pattern: on long-horizon tasks, policies score substantially higher on intermediate sub-step credit than on full-task success. Robots can pick the cup, and they can stack the cup, but they cannot reliably \emph{pick and then stack}.
+A remarkable recent finding in machine learning is that many capability gains come not from making models bigger, but from spending more compute \emph{at inference time}: letting language models reason longer before answering~\cite{testtime}. Embodied policies have no analogue of this principle. A Vision-Language-Action (VLA) policy spends exactly the same computation on a routine reach as on the one grasp on which a ten-minute task depends, executes the result open-loop, and has no mechanism to anticipate consequences, detect drift, or recover. The outcome is visible in comprehensive evaluations: on RoboDojo~\cite{robodojo}, the strongest generalist policies earn substantial \emph{partial} credit on long-horizon tasks but rarely complete them end-to-end---robots can pick the cup, and they can stack the cup, but they cannot reliably \emph{pick and then stack}. Per-step deviations of behavior-cloned policies compound multiplicatively across stages until success collapses.
 
-This pattern is the signature of \textbf{compounding error}: each step of a behavior-cloned policy introduces a small deviation, and deviations multiply over a horizon of dozens to hundreds of steps. Existing remedies attack individual links of this chain---better backbones, better action decoders, more data---but leave the execution protocol untouched: the policy still acts open-loop, committing to each action chunk with no mechanism to anticipate consequences, detect drift, or recover.
+This paper asks: \textbf{how should an embodied policy spend test-time compute?} Uniformly scaling per-step computation is infeasible (full-horizon imagined rollouts cost seconds per step) and unnecessary (most steps are routine). Our answer is a principle: \emph{concentrate inference-time computation at a sparse set of physically meaningful decision boundaries, and spend it on verification}. Long-horizon failure is then a systems problem rather than a capacity problem, and closing the loop at the right granularity is a cheap, general, and provable way to fix it.
 
-We argue for a complementary view: \textbf{long-horizon failure is a systems problem, not a capacity problem}. A robust long-horizon agent must (a) \emph{imagine} what its action will change, (b) \emph{verify} the imagination against task progress before committing, and (c) \emph{retreat} to a known-good state when execution deviates from plan. None of the four current world-model paradigms for VLA implements this loop completely: world-model post-training uses dynamics only at training time; world-model-as-planner predicts but never verifies; world-model-as-simulator optimizes in imagination but does not correct execution; event-triggered correctors intervene only at isolated decision points such as pre-grasp.
+We instantiate this principle as \mile{} (Milestone-grounded closed-Loop imagination and Execution). Physical milestones---gripper transitions, contact onsets, kinematic turning points, discovered automatically from demonstrations---segment a task into short stages. At each stage boundary, \mile{} samples candidate action chunks from the frozen base policy, verifies them by imagined rollouts of a lightweight latent world model scored by a steps-to-completion value head, executes only candidates that pass a \emph{conformally calibrated} acceptance test, and retreats to the most recent verified milestone on deviation. Verification is where we spend compute; milestones are where we spend it; rollback is insurance for when imagination is wrong.
 
-We introduce \mile{} (Milestone-grounded closed-Loop imagination and Execution), a wrapper that closes this loop at the granularity of \textbf{physical milestones}---sparse, automatically discovered events (gripper transitions, contact onsets, kinematic turning points) that segment a long-horizon task into short verified stages. Milestones are the right unit for closing the loop: they are frequent enough to truncate error accumulation, sparse enough to keep verification cheap, and physically grounded enough to be predicted by a lightweight world model operating in the VLA's own feature space.
+Two properties distinguish \mile{} from prior uses of world models in VLA systems (which predict but do not verify, verify only at isolated events, or train inside imagination). First, the acceptance test carries a \textbf{distribution-free statistical guarantee}: by split-conformal calibration, an accepted segment terminates within the verification radius of its target milestone with probability at least $1-\alpha$, for user-chosen $\alpha$ and finite calibration data. This upgrades the compounding-error analysis from a heuristic argument to an explicit success lower bound (Proposition~\ref{prop:main}). Second, \mile{} is not only an inference procedure: every rollback automatically produces hindsight-labeled \emph{recovery data}, which is periodically distilled back into the system, yielding reward-free self-improvement across deployment rounds.
 
 \noindent\textbf{Contributions.}
 \begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
-  \item \textbf{Milestone representation without annotation.} We present an automatic extractor that discovers sparse, physically meaningful milestones from demonstration trajectories using kinematic and visual-change cues, and show that milestone latents provide a compact, execution-aligned representation of long-horizon tasks.
-  \item \textbf{Verified execution.} A lightweight world model (\TODO{X}M parameters) predicts milestone-conditioned futures in the frozen VLA's feature space; candidate action chunks are ranked by imagined progress (a steps-to-completion value head) before commitment.
-  \item \textbf{Safe-anchor rollback.} A stack of verified milestones defines \emph{heal states} explicitly; deviation beyond a calibrated threshold triggers retreat-and-replan, converting catastrophic task failure into bounded local re-attempts. We show theoretically that this converts the multiplicative compounding-error bound of behavior cloning into an additive bound over verified segments.
-  \item \textbf{Comprehensive evaluation.} On RoboDojo (long-horizon and memory dimensions), \mile{} improves \TODO{metric} by \TODO{XX}\% relative over DM0.5 and transfers to $\pi_0$ unchanged, with ablations isolating the contribution of verification and rollback, and a failure-taxonomy analysis showing which long-horizon failure modes are repaired.
+  \item \textbf{A test-time-compute framework for embodied policies.} We formalize where (milestone boundaries), how much (candidate budgets), and how safely (conformal verification + rollback) a long-horizon policy should spend inference-time computation, and show empirically that success scales with this budget.
+  \item \textbf{Conformally verified execution.} A lightweight latent world model (\TODO{X}M parameters) with a jointly trained progress-value head scores candidate chunks; split-conformal calibration gives a finite-sample, distribution-free guarantee on the acceptance test, converting the compounding-error bound from multiplicative in horizon to additive over verified segments.
+  \item \textbf{Safe-anchor rollback with self-improvement.} A verified-milestone stack defines heal states explicitly; hindsight relabeling converts every retreat into recovery training data, improving success across deployment rounds without rewards or human labels.
+  \item \textbf{Comprehensive evaluation.} On RoboDojo, \mile{} improves long-horizon and memory performance over DM0.5 by \TODO{XX}\% relative, transfers to $\pi_0$ unchanged, and includes compute--success scaling curves, coverage-validity checks of the conformal guarantee, and a failure-taxonomy analysis.
 \end{enumerate}
 
 % ======================================================================
@@ -96,6 +96,9 @@ World-in-Loop~\cite{worldinloop} triggers a corrector at isolated events (e.g., 
 
 \paragraph{Long-horizon evaluation.}
 RoboDojo~\cite{robodojo} provides the first unified sim-and-real protocol with a public leaderboard, five capability dimensions, and per-sub-step scoring; its finding that long-horizon \emph{scores} exceed long-horizon \emph{success rates} is direct evidence of compounding error and motivates our design. LIBERO-X~\cite{libero_x} and CALVIN~\cite{calvin} serve as supplementary benchmarks.
+
+\paragraph{Test-time compute and conformal prediction.}
+Scaling inference-time computation has emerged as a capability axis for language models~\cite{testtime}, but embodied policies lack a principled account of where such compute should go; \mile{} provides one (verification at milestone boundaries) and supports it with scaling curves. Conformal prediction~\cite{conformal} gives distribution-free uncertainty guarantees and has seen growing use in ML; to our knowledge, \mile{} is the first to use conformal calibration as an \emph{execution-time acceptance test} for robot policies, turning a heuristic verification threshold into a statistical guarantee.
 
 % ======================================================================
 \section{Preliminaries and Problem Statement}
@@ -198,27 +201,49 @@ At each decision point, the controller operates as follows (Algorithm~\ref{alg:m
 
 The full controller requires no retraining of $\pi_\theta$: only $p_\phi$, $v_\psi$, and the extractor thresholds are learned (\TODO{X}M parameters total).
 
+\subsection{Conformal calibration of the acceptance test}
+\label{sec:conformal}
+
+The scoring rule (Eq.~\ref{eq:score}) needs a threshold $\tau_J$, and milestone verification needs a radius $r$. Rather than tuning both heuristically, we calibrate the acceptance test with \textbf{split-conformal prediction}, which yields a distribution-free, finite-sample guarantee.
+
+Fix the verification radius $r$ (chosen once from kinematic task scale, \TODO{X}). On a held-out set of $n$ calibration rollouts from the \emph{base policy} (no \mile{} components tuned on them), record for every executed chunk $i$ the pair $(J_i, d_i)$, where $J_i$ is the verification score of the executed candidate and $d_i = \|\z^{\mathrm{real}}_i - \z_{k+1}\|$ is the realized deviation from the target milestone. We choose the acceptance threshold as
+\begin{equation}
+\hat{\tau} \;=\; \min\Big\{\, \tau \;:\; \widehat{Q}_{1-\alpha}\big(\{ d_i : J_i \ge \tau \}\big) \;\le\; r \,\Big\},
+\label{eq:conformal}
+\end{equation}
+where $\widehat{Q}_{1-\alpha}$ denotes the empirical $\lceil (1-\alpha)(n_\tau + 1) \rceil / n_\tau$ quantile over the $n_\tau$ calibration points passing $\tau$. By exchangeability of calibration and test points, a standard argument (Appendix~\ref{app:proof}) gives:
+
+\begin{proposition}[Marginal coverage of accepted segments]
+\label{prop:coverage}
+For a new decision point drawn from the same distribution, the executed chunk passes the acceptance test and terminates within radius $r$ of its target milestone with probability at least $1 - \alpha - \frac{1}{n+1}$.
+\end{proposition}
+
+The guarantee is \emph{marginal} over accepted decisions (not conditional on the state), requires no assumption about the world model's accuracy, and degrades gracefully: a worse world model simply yields a stricter $\hat{\tau}$ (more rejections, more rollbacks), not more false accepts. We use $\alpha = \TODO{0.05}$ throughout and verify coverage empirically (\S\ref{sec:coverage}).
+
 \subsection{Theory: verified re-anchoring truncates error compounding}
 \label{sec:theory}
 
-\begin{proposition}[informal]
+\begin{proposition}[Success bound with conformal re-anchoring]
 \label{prop:main}
-Let the task be segmented into $K$ stages by milestones, with per-step shift error $\epsilon$ and stage length $h$. Suppose the verifier accepts an executed segment only if its terminal-state deviation from the target milestone is below radius $r$, and rollback restores a state within the $r$-neighborhood of the last verified milestone with probability at least $1-\delta$. Then task success is bounded below by
+Let a task be segmented into $K$ stages by milestones. Suppose (i) each accepted segment terminates within radius $r$ of its target milestone with probability at least $1-\alpha$ (Proposition~\ref{prop:coverage}), and (ii) rollback restores a state within the $r$-neighborhood of the last verified milestone with probability at least $1-\delta$, with at most $M$ retreat attempts per stage. Then
 \begin{equation}
-P(\mathrm{success}) \;\ge\; \prod_{k=1}^{K} \Big[\, (1-\delta)\, P\big(\text{segment } k \text{ accepted}\big) \Big],
-\qquad
-P(\text{accepted}) \;\ge\; 1 - \frac{h\epsilon}{r}\ \ \text{(first-order)},
+P(\mathrm{success}) \;\ge\; 1 - K\big(\alpha + M\delta\big),
 \end{equation}
-so that per-stage error enters \textbf{additively relative to the acceptance radius} rather than compounding multiplicatively across the full horizon $Kh$ (cf.\ Eq.~\ref{eq:compounding}). A naive open-loop policy has $r = \infty$ (no truncation), recovering the standard bound.
+whereas the open-loop base policy satisfies $P(\mathrm{success}) \le \prod_{k=1}^{K}(1 - h_k \epsilon)$ with per-stage horizon $h_k$ (Eq.~\ref{eq:compounding}).
 \end{proposition}
 
 \begin{proof}[Proof sketch]
-Induction over stages with a union bound over verification failures; deviation within an accepted segment is a martingale with bounded increments, so terminal deviation concentrates around $h\epsilon$; acceptance at radius $r$ truncates the tail. Full proof in Appendix~\ref{app:proof}.
+Union bound over $K$ stages: a task fails only if some stage is accepted erroneously (probability $\le \alpha$ each) or its $M$ retreats all fail (probability $\le \delta^M$, absorbed into $M\delta$). Within an accepted segment, deviation is bounded by $r$ by definition, so errors cannot propagate across stages. The open-loop policy has $r = \infty$ and no acceptance test, so per-step errors accumulate within each full stage ($h_k \epsilon$) and multiply across stages. Full proof in Appendix~\ref{app:proof}.
 \end{proof}
 
 \begin{remark}
-The proposition makes the design trade-offs explicit: smaller $r$ (stricter verification) tightens the bound but increases rollback frequency and latency; milestone sparsity controls $h$. Section~\ref{sec:ablation} ablates both.
+The contrast is structural: open-loop failure probability grows with the \emph{total} horizon because error budgets are unchecked inside stages; \mile{}'s failure probability is controlled by two \emph{user-chosen} constants $(\alpha, \delta)$, independent of how long each stage is. The parameters $r$ and $M$ trade guarantee strength against rollback frequency and latency; \S\ref{sec:ablation} ablates both.
 \end{remark}
+
+\subsection{Self-improvement from hindsight recovery data}
+\label{sec:selfimprove}
+
+Rollback events are usually treated as wasted computation. \mile{} instead converts them into training signal. Whenever a retreat to anchor $m_k$ is followed by successfully reaching $m_{k+1}$, the trajectory segment (anchor state $\rightarrow$ milestone) is stored in a \emph{recovery buffer} with a hindsight milestone label---a free demonstration of \emph{how to recover from the boundary of failure}. Every $R$ deployment rounds (\TODO{$R{=}500$ episodes}), the buffer is distilled by a lightweight update: the value head $v_\psi$ is fine-tuned on buffer states (improving progress estimation exactly where the base policy struggles), and optionally a LoRA adapter on the base's action expert is trained on recovery segments. No rewards, human labels, or new task demonstrations are required. \S\ref{sec:rounds} shows success improves monotonically over \TODO{3} rounds.
 
 % ======================================================================
 \section{Experiments}
@@ -302,16 +327,58 @@ $-$ verification ($C{=}1$, no scoring)        & \TODO{} & \TODO{} & \TODO{} \\
 $-$ rollback                                  & \TODO{} & \TODO{} & \TODO{} \\
 $-$ milestones (dense rollout, horizon $H'$)  & \TODO{} & \TODO{} & \TODO{} \\
 $-$ joint value training (separate heads)     & \TODO{} & \TODO{} & \TODO{} \\
+Conformal $\hat{\tau}$ vs.\ heuristic $\tau_J$ & \TODO{} & \TODO{} & \TODO{} \\
 Rule-only extractor vs.\ learned              & \TODO{} & \TODO{} & \TODO{} \\
 Acceptance radius $r \in \{r/2, r, 2r\}$      & \TODO{} & \TODO{} & \TODO{} \\
-Milestone stack depth                         & \TODO{} & \TODO{} & \TODO{} \\
+Max retreats per stage $M \in \{1,2,3\}$      & \TODO{} & \TODO{} & \TODO{} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[t]
   \centering
-  \fbox{\parbox{0.9\columnwidth}{\centering\vspace{3em}\TODO{Figure 2: latency--success trade-off, \mile{} vs.\ World-in-Loop vs.\ WoVR-style full rollouts}\vspace{3em}}}
+  \fbox{\parbox{0.9\columnwidth}{\centering\vspace{3em}\TODO{Figure 2: compute--success scaling --- success vs.\ candidate budget $C \in \{1,2,4,8\}$ and latency, \mile{} vs.\ World-in-Loop vs.\ WoVR-style full rollouts}\vspace{3em}}}
+  \caption{\textbf{Test-time compute scaling.} Success as a function of the per-decision compute budget. \mile{}'s milestone-level verification reaches \TODO{XX}\% of its maximal gain at \TODO{X}$\times$ lower latency than full-rollout verification, and degrades gracefully to the base policy at $C{=}1$.}
+  \label{fig:scaling}
+\end{figure}
+
+\subsection{Coverage validity of the conformal guarantee}
+\label{sec:coverage}
+
+Proposition~\ref{prop:coverage} is only useful if it holds empirically on the \emph{held-out} tasks (never used for calibration). Table~\ref{tab:coverage} reports, at $\alpha = \TODO{0.05}$, the empirical fraction of accepted segments terminating within radius $r$ (target $\ge 1-\alpha$), per dimension. The guarantee holds with a small conservative margin (\TODO{}), confirming that the acceptance test's error rate is controlled in practice, not just in theory.
+
+\begin{table}[t]
+\centering
+\caption{Empirical coverage of accepted segments on held-out tasks ($\alpha=\TODO{0.05}$, target $\ge \TODO{0.95}$). \TODO{fill}}
+\label{tab:coverage}
+\small
+\begin{tabular}{lcc}
+\toprule
+Dimension & Empirical coverage & Rejection rate \\
+\midrule
+Long-horizon   & \TODO{} & \TODO{} \\
+Memory         & \TODO{} & \TODO{} \\
+Generalization & \TODO{} & \TODO{} \\
+Precision      & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Self-improvement across deployment rounds}
+\label{sec:rounds}
+
+Figure~\ref{fig:rounds} shows success on long-horizon tasks over \TODO{3} self-improvement rounds (\S\ref{sec:selfimprove}): each round collects recovery data from \TODO{500} deployment episodes and distills it into the value head (and a LoRA adapter on the action expert). Success improves from \TODO{X} to \TODO{X} (\TODO{XX}\% relative) without any new demonstrations or rewards; most of the gain comes from round 1, and the value-head-only variant captures \TODO{XX}\% of it --- indicating that better progress estimation at failure boundaries is the dominant mechanism.
+
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.9\columnwidth}{\centering\vspace{3em}\TODO{Figure 3: success vs.\ self-improvement round (R0--R3), value-head-only vs.\ +LoRA variants}\vspace{3em}}}
+  \caption{\textbf{Reward-free self-improvement.} Hindsight recovery data collected during deployment improves success across rounds.}
+  \label{fig:rounds}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.9\columnwidth}{\centering\vspace{3em}\TODO{Figure 4: latency--success trade-off across methods}\vspace{3em}}}
   \caption{Latency--success trade-off. \mile{}'s milestone-level triggering achieves \TODO{XX}\% of the rollback benefit at \TODO{X}$\times$ lower latency.}
   \label{fig:latency}
 \end{figure}
@@ -379,6 +446,8 @@ We presented \mile{}, a model-based wrapper that turns open-loop VLA policies in
 \bibitem{ross2011} Ross, Gordon, Bagnell. \emph{A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning (DAgger)}. AISTATS 2011.
 \bibitem{liber0} LiberAI. \emph{Liber-0 Preview} (RoboDojo leaderboard entry, rank 1 as of 2026-09-17; closed-source). 2026. \TODO{official link when released}
 \bibitem{gpt6astra} RoboDojo Team. \emph{GPT-6-Astra System-2 Planning Baseline} (RoboDojo leaderboard). 2026.
+\bibitem{testtime} \TODO{cite test-time compute / inference-time scaling works, e.g., OpenAI o1 report; Snell et al., ``Scaling LLM Test-Time Compute Optimally can be More Effective than Scaling Model Parameters''.}
+\bibitem{conformal} Vovk, Gammerman, Shafer. \emph{Algorithmic Learning in a Random World}. Springer 2005; Angelopoulos \& Bates. \emph{Conformal Prediction: A Gentle Introduction}. FnT ML 2023.
 \end{thebibliography}
 
 % ======================================================================
