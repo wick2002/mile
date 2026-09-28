@@ -1,0 +1,51 @@
+# ============================================================================
+# MILE 环境依赖（Plan A+，2026-09-28）
+# Python >= 3.10（Isaac Lab 官方要求 3.10；3.11 亦可）
+#
+# 用法（在部署服务器上）：
+#   conda create -n mile python=3.10 -y && conda activate mile
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+#
+# 注意：本文件只覆盖 MILE 本体的 pip 依赖。
+# 下列外部组件必须按各自官方文档单独安装（见文末说明）：
+#   - Isaac Sim / Isaac Lab   （NVIDIA Omniverse 安装器，RTX GPU 必需）
+#   - RoboDojo 基准 + XPolicyLab（官方仓库）
+#   - OpenDM 推理服务          （Docker 镜像，github.com/dexmal/opendm）
+# ============================================================================
+
+# ---- 核心（必需）----------------------------------------------------------
+# PyTorch：请先用上面的 cu121/cu124 索引装 CUDA 版，再装本文件；
+# 这里只写版本约束，避免 pip 把它降级成 CPU 版。
+torch>=2.4,<2.6          # 世界模型训练/推理（bf16）；与 Isaac Lab 2.x 兼容
+numpy>=1.26,<2.0         # Isaac Sim 生态尚未完全兼容 numpy 2.x，勿升级
+pyyaml>=6.0              # configs/default.yaml 配置读取
+
+# ---- 建议（环境/接口约定）--------------------------------------------------
+gymnasium>=0.29,<1.0     # RoboDojoEnv 遵循 gym/gymnasium 接口约定
+requests>=2.31           # OpenDM HTTP 推理服务调用（备用通道/健康检查）
+Pillow>=10.0             # 多路相机图像的 JPEG 编解码（multipart 打包）
+
+# ---- 可选（训练日志与调试，可按需取消注释）---------------------------------
+# tensorboard>=2.16      # wm/train.py 训练曲线可视化
+# tqdm>=4.66             # 数据预处理/评测进度条
+# matplotlib>=3.8        # 画 scaling 曲线 / R0→R3 轮次曲线（论文 Figure 2/3）
+# pandas>=2.1            # eval.jsonl 结果汇总分析
+
+# ============================================================================
+# 外部组件（不走 pip，部署顺序见 docs/SETUP_zh.md）
+# ----------------------------------------------------------------------------
+# 1) Isaac Sim 4.x + Isaac Lab 2.x
+#    https://isaac-sim.github.io/IsaacLab/main/source/setup/installation.html
+#    需 RTX 系列 GPU + 官方驱动；安装后用官方任务注册表验证。
+#
+# 2) RoboDojo 基准（arXiv 2607.04434）
+#    按其官方仓库说明安装任务包与 XPolicyLab 接口，
+#    并下载官方 3,500 条示范轨迹（里程碑提取 + WM 训练数据源）。
+#
+# 3) OpenDM 推理服务（DM0.5 基座）
+#    docker pull 官方镜像（github.com/dexmal/opendm），
+#    启动后暴露 /process_frame；W1 首日验证 DM05-robotwin2 SFT 权重可直接复用。
+#
+# 4) （可选）RealEval 远程真机评测账号——W10 前在 RoboDojo 官网注册排队。
+# ============================================================================

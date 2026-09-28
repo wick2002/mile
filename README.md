@@ -71,6 +71,8 @@ git clone https://github.com/RoboDojo-Benchmark/RoboDojo.git
 
 # 3. MILE itself
 git clone <this-repo> && cd mile
+pip install torch --index-url https://download.pytorch.org/whl/cu121  # CUDA build first
+pip install -r requirements.txt   # see the file header for external (non-pip) components
 pip install -e .
 ```
 

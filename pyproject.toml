@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mile"
+version = "0.1.0"
+description = "MILE: Milestone-grounded closed-Loop imagination and Execution for long-horizon embodied tasks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# 运行依赖以 requirements.txt 为准（torch 需按 CUDA 版本单独安装），
+# 此处不重复声明，避免 pip 把 CUDA 版 torch 覆盖为 CPU 版。
+
+[tool.setuptools.packages.find]
+include = ["mile*"]
