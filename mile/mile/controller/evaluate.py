@@ -16,10 +16,16 @@ from ..controller.controller import MILEController
 
 def run_episode(env, controller: MILEController | None, base_client,
                 instruction: str, episode_seed: int,
-                max_decisions: int = 40) -> dict:
-    """One episode. controller=None means bare base policy (open-loop)."""
+                max_decisions: int = 40,
+                exec_horizon: int | None = None) -> dict:
+    """One episode. controller=None means bare base policy (open-loop).
+
+    exec_horizon: execute only the first N steps of each predicted chunk
+    (RoboDojo official adapter uses 25 of 50). None = execute full chunk.
+    """
     obs = env.reset(seed=episode_seed)
     controller and controller.reset()
+    base_client.reset_history()   # memory-enabled base: clear per-episode buffer
 
     events: list[dict] = []
     for _ in range(max_decisions):
@@ -40,8 +46,9 @@ def run_episode(env, controller: MILEController | None, base_client,
             env.restore_state(rb["env_snapshot"])
             continue
 
-        # execute the chunk step by step (record steps for recovery data)
-        for a in chunk:
+        # execute the chunk step by step (record steps for recovery data);
+        # official protocol executes only the first exec_horizon steps
+        for a in chunk[:exec_horizon]:
             obs = env.step(a)
             if controller is not None:
                 controller.record_step(obs["patch_tokens"], a)
@@ -64,7 +71,8 @@ def run_episode(env, controller: MILEController | None, base_client,
 
 
 def evaluate(env_factory, task_ids: list[str], controller_factory,
-             base_client, episodes_per_task: int, out_path: str) -> dict:
+             base_client, episodes_per_task: int, out_path: str,
+             exec_horizon: int | None = None) -> dict:
     """Full benchmark sweep. Writes per-task results to out_path (jsonl)."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +88,8 @@ def evaluate(env_factory, task_ids: list[str], controller_factory,
                 env.set_randomized(randomized)
                 r = run_episode(env, controller, base_client,
                                 instruction=env.task_instruction(),
-                                episode_seed=hash((task_id, ep)) % (2**31))
+                                episode_seed=hash((task_id, ep)) % (2**31),
+                                exec_horizon=exec_horizon)
                 scores.append(r["score"])
                 successes.append(float(r["success"]))
                 fout.write(json.dumps({"task": task_id, "ep": ep,

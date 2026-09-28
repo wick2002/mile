@@ -27,6 +27,10 @@ class ControllerConfig:
     patience: int = 2
     max_pop: int = 2
     device: str = "cuda"
+    # RoboDojo official adapter executes only the first 25 steps of each
+    # 50-step chunk; the WM imagines exactly that executed prefix so that
+    # the imagined endpoint is comparable with the realized observation.
+    exec_horizon: int = 25
 
 
 class MILEController:
@@ -110,10 +114,13 @@ class MILEController:
         # 1. candidate generation: C chunks with different noise seeds
         candidates = self.base.sample_candidates(obs, n=cfg.num_candidates)
 
-        # 2. imagination: batch WM rollout for all candidates
+        # 2. imagination: batch WM rollout over the EXECUTED prefix (first
+        # exec_horizon steps) of each candidate chunk
         patch = torch.from_numpy(obs["patch_tokens"]).float().unsqueeze(0).to(device)
         text = torch.from_numpy(obs["text_emb"]).float().unsqueeze(0).to(device)
-        acts = torch.from_numpy(np.stack(candidates)).float().to(device)
+        acts = torch.from_numpy(
+            np.stack(candidates)[:, : cfg.exec_horizon, :]
+        ).float().to(device)
         B = acts.shape[0]
         out = self.wm(
             patch.expand(B, -1, -1),
