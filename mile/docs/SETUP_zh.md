@@ -45,11 +45,19 @@ docker run -it --rm --gpus all --network host --shm-size=16g \
 # 另开容器部署 RoboDojo (Isaac Sim/Lab)：
 git clone https://github.com/RoboDojo-Benchmark/RoboDojo.git
 
-# W1 检查点：启动 DM05-robotwin2 推理服务并复现榜单数字
-modelscope download --model Dexmal/DM05-robotwin2-bf16 --local_dir ./checkpoints/DM05-robotwin2-bf16
+# W1 检查点：启动官方 RoboDojo 微调权重并复现榜单数字（24.90/19.34%）
+# DM05-MEM-Robodojo-Sim（Dexmal 2026-08-26 发布，HF/ModelScope 均有）
+pip install -U "huggingface_hub[cli]"
+hf download Dexmal/DM05-MEM-Robodojo-Sim --local-dir ./checkpoints/DM05-MEM-Robodojo-Sim
+# 目录内必须含 norm_stats.json（随权重一起发布，缺了会从 ./norm_stats/ 兜底，数值可能漂移）
 script/dm05_launcher.sh --task inference --nproc_per_node 1 \
-  --model-config.model-name-or-path ./checkpoints/DM05-robotwin2-bf16 \
+  --model-config.model-name-or-path ./checkpoints/DM05-MEM-Robodojo-Sim \
   --model-config.chunk-size 50 --inference-config.port 7891
+# 官方协议注意（与榜单对齐，configs/default.yaml 已内置）：
+#   - 相机顺序 头/左腕/右腕 不可换；14 维绝对关节位置动作
+#   - 每块 50 步只执行前 25 步（exec_horizon: 25，MILE 想象窗口同步为 25）
+#   - MEM 检查点需最多 20 帧头相机历史 @1FPS，episode 开头左侧补齐
+#   - 策略接入走 XPolicyLab（PR #101，已合并则用 main 分支）
 
 # S1 (W3): 里程碑库 —— v1 直接用官方子步骤边界
 python -m mile.scripts.extract_milestones --use-official --demo-dir /path/to/demos

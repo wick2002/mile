@@ -20,8 +20,8 @@
 **分节**：
 | 节 | 内容 | 关键参数 |
 |---|---|---|
-| `base` | 冻结基座 DM0.5 的接口信息 | 推理服务地址、特征层（-2=倒数第二层）、动作维数 14、chunk 50 步、3 路相机键名 |
-| `world_model` | 世界模型架构 | d_model=1024、4 层、16 头、动作 token 8 个、集成头 3 个、掩码率 20%、三项损失权重 |
+| `base` | 冻结基座 DM0.5 的接口信息 | 推理服务地址、官方 RoboDojo 微调权重 DM05-MEM-Robodojo-Sim、特征层（-2）、动作维数 14、chunk 50 步但**只执行前 25 步**（`exec_horizon`，官方协议）、20 帧历史 @1FPS、3 路相机顺序 头/左腕/右腕 |
+| `world_model` | 世界模型架构 | d_model=1024、4 层、16 头、**想象窗口 25 步（=exec_horizon）**、动作 token 4 个、集成头 3 个、掩码率 20%、三项损失权重 |
 | `train` | 训练超参 | lr 3e-4 余弦、batch 256、6 万步、bf16 |
 | `milestones` | 里程碑提取 | 三线索权重 α/β/γ、最小间隔 100 步、K∈[3,10]、`use_official_substeps`（v1 开关） |
 | `controller` | 执行控制器 | C=4 候选、λ=1.0、η=0.5、r=0.35、n=2、最多弹栈 2 层（τ_J 不再手填，由 conformal 标定给出） |
@@ -39,11 +39,11 @@
 **类 `LatentWorldModel(nn.Module)`**
 - 输入投影：
   - `patch_proj`：画面 patch 特征 2560 维 → 1024 维；
-  - `action_compress`：Conv1d（k=7, s=6）把 [B, 50, 14] 的动作块压成 [B, 8, 1024] 的 8 个动作 token；
+  - `action_compress`：Conv1d（k 按窗口自动计算，s=6）把 [B, 25, 14] 的执行窗口动作压成 [B, 4, 1024] 的 4 个动作 token（窗口 25 = RoboDojo 官方每块实际执行步数）；
   - `text_proj`：阶段描述文本特征 2560 维 → 1024 维；
   - `value_query`：一个可学习的查询 token，它的输出位置用来读进度值；
   - `mask_token`：训练时替换被遮掉的 patch（20% 掩码）。
-- 主干：`trunk` = 4 层 pre-LN TransformerEncoder（d=1024, 16 头, FFN 4096）。输入序列 = 256 patch + 8 动作 + 4 文本 + 1 查询 = 269 个 token。
+- 主干：`trunk` = 4 层 pre-LN TransformerEncoder（d=1024, 16 头, FFN 4096）。输入序列 = 256 patch + 4 动作 + 4 文本 + 1 查询 = 265 个 token。
 - 输出头：
   - `pred_heads`：3 个独立线性层（1024 → 2560），**集成预测**——三个头预测越不一致，说明模型越没把握（不确定性的来源）；
   - `value_head`：2 层 MLP + sigmoid，输出 [0,1] 进度值。
@@ -60,8 +60,8 @@
 ### `mile/wm/data.py` —— 训练数据
 **类 `SlidingWindowDataset(Dataset)`**
 - 读取预处理好的 npz 轨迹（每条含 `latents/actions/milestones/text_emb`）；
-- 初始化时扫描所有文件，用宽度 50 步、步长 10 的滑动窗口建索引（约 40 万样本）；
-- `__getitem__` 返回一个训练样本：当前帧 patch 特征、未来 50 步动作、50 步后的目标特征、下一阶段文本、进度标签。
+- 初始化时扫描所有文件，用宽度 25 步（=exec_horizon）、步长 10 的滑动窗口建索引；
+- `__getitem__` 返回一个训练样本：当前帧 patch 特征、未来 25 步动作、25 步后的目标特征、下一阶段文本、进度标签。
 - **静态方法 `progress_label(t, milestones, T)`**：分段线性进度标签——第 i 个里程碑处进度 = i/(K+1)，中间线性插值。无需人工标注。
 
 **函数 `make_dataloader(...)`**：标准 DataLoader 封装（batch 256、8 workers、pin_memory）。
@@ -144,18 +144,18 @@
 - `max_pop=2`：最多连退 2 层，防止在错误里无限打转。
 
 ### `mile/controller/controller.py` —— 论文 Algorithm 1
-**数据类 `ControllerConfig`**：C、λ、η、τ_J、r、n、max_pop 的容器。
+**数据类 `ControllerConfig`**：C、λ、η、τ_J、r、n、max_pop、exec_horizon（每块实际执行步数，官方协议 25）的容器。
 **类 `MILEController`**：把基座客户端、世界模型、里程碑库、验证栈组装起来。
 
 - **`act(obs)` → (action_chunk, info)**：一次决策的完整流程——
   1. 取下一个目标里程碑（全部完成则进入 `tail` 模式直接执行基座）；
-  2. 向基座要 C=4 个候选动作块（不同噪声种子）；
-  3. 世界模型批量想象 4 个结局；
+  2. 向基座要 C=4 个候选动作块（不同噪声种子，每块 50 步）；
+  3. 世界模型批量想象 4 个结局（**只想象每块前 25 步**——与官方执行协议一致，想象终点才与真实观测可比）；
   4. 打分选优；全员不过线则返回 `action: "rollback"`；
-  5. 返回最优候选动作块。
+  5. 返回最优候选动作块（完整 50 步，由执行端截取前 25 步）。
 - **`rollback()`**：退到栈顶快照；**同时 `_begin_recording()` 开始录制恢复片段**；当前阶段在 `one_way_ranks`（不可逆操作）里则直接 `abort`（录制丢弃）。
 - **`record_step(latent, action)`**：执行每一帧时调用——若正在录制，把实际特征和动作追加进当前片段。
-- **`verify(realized_latent, env_snapshot)` → event**：执行完 50 步后调用——
+- **`verify(realized_latent, env_snapshot)` → event**：执行完 25 步（exec_horizon）后调用——
   - 到达里程碑：`verified`，入栈并存快照；**若在录制中则 `_commit_recording()`——片段入 RecoveryBuffer**（回退→成功恢复 = 一条免费恢复示范）；
   - 轻微偏离：`deviated`，连续计数 +1；
   - 连续 2 次偏离：触发 `rollback`。
@@ -163,8 +163,8 @@
 - 构造参数新增 `recovery_buffer=None`：不传则退化为纯执行模式（W6-8 首轮评选用），传了则启用自改进数据收集（W10 轮次实验用）。
 
 ### `mile/controller/evaluate.py` —— 评测循环
-**`run_episode(env, controller, base_client, instruction, episode_seed)`**
-跑一局：reset → 循环（决策 → 逐帧执行动作块，**每帧 `controller.record_step(...)` 供恢复录制** → 验证/回退）→ 取官方子步骤评分。`controller=None` 时就是裸基座对照组（开环）。
+**`run_episode(env, controller, base_client, instruction, episode_seed, exec_horizon=None)`**
+跑一局：reset → 循环（决策 → 逐帧执行动作块的**前 exec_horizon 步**（官方协议 25/50），每帧 `controller.record_step(...)` 供恢复录制 → 验证/回退）→ 取官方子步骤评分。`controller=None` 时就是裸基座对照组（开环）。
 **`evaluate(env_factory, task_ids, controller_factory, base_client, episodes_per_task, out_path)`**
 全量评测：每任务 50 局（前 25 标准场景、后 25 随机场景），逐局写 jsonl，最后打印每任务的 Score/SR 和 95% 置信区间。
 
@@ -173,11 +173,12 @@
 ## 4. 基座接口（`mile/base/`）
 
 ### `mile/base/dm05_client.py`
-**数据类 `DM05Config`**：服务地址、动作维数、chunk 长度、相机键名。
+**数据类 `DM05Config`**：服务地址、动作维数、chunk 长度、相机键名（头/左腕/右腕）、历史帧参数（20 帧 @1FPS）。
 **类 `BasePolicyClient`**：HTTP 客户端，对接 OpenDM 推理服务（`/process_frame`）。
 - `sample(obs, seed)`：要一个动作块；
 - `sample_candidates(obs, n)`：用 n 个不同随机种子要 n 个候选——**flow matching 的随机性免费提供了候选多样性**；
-- `_request`：把指令、状态、多路图像打包成 multipart 发 POST，解析返回的动作块。
+- **历史帧缓冲**（DM05-MEM-Robodojo-Sim 是记忆版检查点）：每个决策点把头相机帧追加进 20 帧滑动缓冲随请求一起发（`reset_history()` 每局开始清空，episode 开头由服务端左补齐）；字段名待与官方适配器（XPolicyLab PR #101）对齐——TODO(server)；
+- `_request`：把指令、状态、多路图像、历史帧打包成 multipart 发 POST，解析返回的动作块。
 **类 `FeatureHook`**：本地模式专用——在 OpenDM 容器内注册 forward hook 到 VLM 倒数第二层，抓取 patch 特征（世界模型的输入 z 就从这里来）。
 
 ---
