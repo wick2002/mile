@@ -118,6 +118,29 @@ class LatentWorldModel(nn.Module):
 
         return WMOutput(pred_latents=preds, value=value, uncertainty=uncertainty)
 
+    @torch.no_grad()
+    def forward_value(self, patch_tokens: torch.Tensor) -> torch.Tensor:
+        """Value-only path for recovery-data distillation (paper §4.6).
+
+        Runs the trunk with zeroed action/text conditioning so the value
+        head can be queried on raw latents without a candidate chunk.
+        Callers that need gradients for the value head should use
+        `value_path` instead.
+        """
+        return self.value_path(patch_tokens)
+
+    def value_path(self, patch_tokens: torch.Tensor) -> torch.Tensor:
+        """Differentiable value-only forward (used by recovery distillation)."""
+        B = patch_tokens.shape[0]
+        d = self.value_query.shape[-1]
+        x = self.patch_proj(patch_tokens)
+        zeros_a = torch.zeros(B, self.action_tokens, d, device=x.device, dtype=x.dtype)
+        zeros_t = torch.zeros(B, self.text_tokens, d, device=x.device, dtype=x.dtype)
+        q = self.value_query.expand(B, -1, -1)
+        seq = torch.cat([x, zeros_a, zeros_t, q], dim=1) + self.pos_embed
+        h = self.final_norm(self.trunk(seq))
+        return torch.sigmoid(self.value_head(h[:, -1, :])).squeeze(-1)
+
 
 def wm_loss(
     out: WMOutput,
