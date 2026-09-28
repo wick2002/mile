@@ -6,12 +6,19 @@ base:
   # OpenDM HTTP 推理服务地址（docker 启动后）
   server_url: "http://127.0.0.1:7891"
   # 本地模式（需要直接进入 OpenDM 容器取特征时）
-  checkpoint: "./checkpoints/DM05-robotwin2-bf16"
+  # 官方 RoboDojo 仿真微调权重（Dexmal 2026-08-26 发布，HF/ModelScope 均有，
+  # 目录内必须含配套 norm_stats.json）——即榜单 24.90/19.34% 的那个 checkpoint
+  checkpoint: "./checkpoints/DM05-MEM-Robodojo-Sim"
   feature_layer: -2          # VLM 倒数第二层
   vlm_dim: 2560
   num_patches: 256
-  action_dim: 14             # RoboDojo/RoboTwin2 双臂
-  chunk_len: 50
+  action_dim: 14             # ARX X5 双臂绝对关节位置
+  chunk_len: 50              # 策略原生输出 50 步动作块
+  exec_horizon: 25           # RoboDojo 官方适配器只执行每个块的前 25 步（榜单协议）
+  # MEM 检查点还需最多 20 帧头相机历史（1 FPS，episode 开头左侧补齐）
+  history_frames: 20
+  history_fps: 1
+  # 相机顺序固定：头 / 左腕 / 右腕（官方要求不可换序）
   image_keys: ["images_1", "images_2", "images_3"]
 
 world_model:
@@ -20,7 +27,10 @@ world_model:
   n_heads: 16
   d_ff: 4096
   dropout: 0.1
-  action_tokens: 8           # 50 步 chunk 压缩为 8 个 token（Conv1d k=7,s=6）
+  # WM 想象窗口 = 实际执行步数（base.exec_horizon），不是策略原生 chunk 50——
+  # 这样想象终点 z_{t+25} 与执行后真实观测严格可比
+  window: 25
+  action_tokens: 4           # 25 步窗口压缩为 4 个 token（Conv1d k=7,s=6 自动适配）
   text_tokens: 4
   n_ensemble: 3              # 不确定性集成头数
   mask_ratio: 0.2            # 输入 patch 掩码比例
