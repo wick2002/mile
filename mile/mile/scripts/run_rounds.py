@@ -31,6 +31,8 @@ def main() -> None:
 
     # ---- load world model ----
     from mile.wm.model import LatentWorldModel
+    window = cfg["world_model"].get(
+        "window", cfg["base"].get("exec_horizon", cfg["base"]["chunk_len"]))
     wm = LatentWorldModel(
         num_patches=cfg["base"]["num_patches"], vlm_dim=cfg["base"]["vlm_dim"],
         d_model=cfg["world_model"]["d_model"],
@@ -38,7 +40,7 @@ def main() -> None:
         n_heads=cfg["world_model"]["n_heads"],
         d_ff=cfg["world_model"]["d_ff"],
         action_dim=cfg["base"]["action_dim"],
-        chunk_len=cfg["base"]["chunk_len"],
+        chunk_len=window,
         action_tokens=cfg["world_model"]["action_tokens"],
         text_tokens=cfg["world_model"]["text_tokens"],
         n_ensemble=cfg["world_model"]["n_ensemble"],
