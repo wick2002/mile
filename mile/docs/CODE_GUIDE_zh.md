@@ -163,8 +163,10 @@
 - 构造参数新增 `recovery_buffer=None`：不传则退化为纯执行模式（W6-8 首轮评选用），传了则启用自改进数据收集（W10 轮次实验用）。
 
 ### `mile/controller/evaluate.py` —— 评测循环
-**`run_episode(env, controller, base_client, instruction, episode_seed, exec_horizon=None)`**
-跑一局：reset → 循环（决策 → 逐帧执行动作块的**前 exec_horizon 步**（官方协议 25/50），每帧 `controller.record_step(...)` 供恢复录制 → 验证/回退）→ 取官方子步骤评分。`controller=None` 时就是裸基座对照组（开环）。
+**`run_episode(env, controller, base_client, instruction, episode_seed, exec_horizon=None, randomized=False)`**
+跑一局：`set_randomized(randomized)` → reset → 循环（决策 → 逐帧执行动作块的**前 exec_horizon 步**（官方协议 25/50），每帧 `controller.record_step(...)` 供恢复录制 → 验证/回退）→ 取官方子步骤评分。`controller=None` 时就是裸基座对照组（开环）。
+- `randomized` 由本函数内部在 **reset 之前**调用 `env.set_randomized(...)`：任务包装器在 `reset()` 内部才抽取场景布局，放在 reset 之后只会对下一局生效，会静默污染 25 标准 / 25 随机的划分统计。把它收进 `run_episode` 是为了让任何新调用方（如 `run_rounds` 的部署局）都不可能搞错顺序。
+- `episode_seed` 由 `stable_seed(task_id, ep)`（`zlib.crc32`）生成，**不要用内置 `hash()`**——`str.__hash__` 受 `PYTHONHASHSEED` 加盐，跨进程不一致会让 50 局扫描和所有 ablation 不可复现。
 **`evaluate(env_factory, task_ids, controller_factory, base_client, episodes_per_task, out_path)`**
 全量评测：每任务 50 局（前 25 标准场景、后 25 随机场景），逐局写 jsonl，最后打印每任务的 Score/SR 和 95% 置信区间。
 
@@ -173,12 +175,12 @@
 ## 4. 基座接口（`mile/base/`）
 
 ### `mile/base/dm05_client.py`
-**数据类 `DM05Config`**：服务地址、动作维数、chunk 长度、相机键名（头/左腕/右腕）、历史帧参数（20 帧 @1FPS）。
-**类 `BasePolicyClient`**：HTTP 客户端，对接 OpenDM 推理服务（`/process_frame`）。
+**数据类 `DM05Config`**：服务地址、API 路径（`/v1/infer`，官方 JSON 接口；旧 `/process_frame` 将淘汰）、动作维数、chunk 长度、相机键名（头/左腕/右腕，按序映射请求槽位 "1"/"2"/"3"）、历史帧参数（20 帧 @1FPS）、机型档案（robot_type/control_mode/speed）、扩散步数（须与服务一致）、图像编码（JPEG base64）。
+**类 `BasePolicyClient`**：HTTP 客户端，对接 OpenDM 推理服务（`POST /v1/infer`，JSON 请求体，返回 `{"actions": [[...]], "metadata": ...}`）。
 - `sample(obs, seed)`：要一个动作块；
-- `sample_candidates(obs, n)`：用 n 个不同随机种子要 n 个候选——**flow matching 的随机性免费提供了候选多样性**；
-- **历史帧缓冲**（DM05-MEM-Robodojo-Sim 是记忆版检查点）：每个决策点把头相机帧追加进 20 帧滑动缓冲随请求一起发（`reset_history()` 每局开始清空，episode 开头由服务端左补齐）；字段名待与官方适配器（XPolicyLab PR #101）对齐——TODO(server)；
-- `_request`：把指令、状态、多路图像、历史帧打包成 multipart 发 POST，解析返回的动作块。
+- `sample_candidates(obs, n)`：用 n 个不同 `sampling.seed` 要 n 个候选——官方 API 支持 seed 确定性采样，**候选多样性 = flow-matching 噪声多样性**（W1 第一天冒烟测试验证：同 obs 多 seed 量候选距离，不够多样则换扰动式候选）；
+- **历史帧缓冲**（DM05-MEM-Robodojo-Sim 是记忆版检查点）：每个决策点把头相机帧追加进 20 帧滑动缓冲，`history_images` 按"最旧→最新"随请求发送（`reset_history()` 每局开始清空；需服务以 `--data-config.is-history` 启动）；
+- `_request`：组装 JSON（prompt/state/images/history/robot_type/sampling），响应做形状校验 [50, 14]。
 **类 `FeatureHook`**：本地模式专用——在 OpenDM 容器内注册 forward hook 到 VLM 倒数第二层，抓取 patch 特征（世界模型的输入 z 就从这里来）。
 
 ---

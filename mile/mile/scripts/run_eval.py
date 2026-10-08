@@ -34,7 +34,22 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
-    base_client = BasePolicyClient(DM05Config(server_url=cfg["base"]["server_url"]))
+    b = cfg["base"]
+    base_client = BasePolicyClient(DM05Config(
+        server_url=b["server_url"],
+        api_path=b.get("api_path", "/v1/infer"),
+        action_dim=b["action_dim"],
+        chunk_len=b["chunk_len"],
+        image_keys=tuple(b["image_keys"]),
+        history_frames=b.get("history_frames", 20),
+        history_fps=b.get("history_fps", 1),
+        robot_type=b.get("robot_type"),
+        control_mode=b.get("control_mode"),
+        speed=b.get("speed"),
+        num_diffusion_steps=b.get("num_diffusion_steps", 10),
+        image_format=b.get("image_format", "JPEG"),
+        image_quality=b.get("image_quality", 95),
+    ))
 
     controller_factory = None
     buffer = None

@@ -41,7 +41,14 @@ class VerifiedStack:
 
     # ---- rollback ----
     def rollback_target(self) -> VerifiedEntry | None:
-        """Entry to restore on rollback. Returns None if the episode should abort."""
+        """Entry to restore on rollback. Returns None if the episode should abort.
+
+        NOTE: the caller (``MILEController.rollback``) MUST call ``pop()``
+        after consuming this entry. Otherwise ``_pops_this_episode`` never
+        advances, ``exhausted`` stays False forever, and every rollback in an
+        episode returns the same anchor — the episode then spins until
+        ``max_decisions`` with zero progress and a corrupted rollback count.
+        """
         if self._pops_this_episode >= self.max_pop or not self._entries:
             return None
         # retreat to stack top; on repeated failures the caller pops first
@@ -52,6 +59,18 @@ class VerifiedStack:
             return None
         self._pops_this_episode += 1
         return self._entries.pop()
+
+    @property
+    def pops_this_episode(self) -> int:
+        return self._pops_this_episode
+
+    def reset_pops(self) -> None:
+        """Clear the *consecutive* roll-back budget (called after progress).
+
+        ``max_pop`` bounds CONSECUTIVE retreats, not the per-episode total:
+        once a milestone is verified again the retreat budget is restored.
+        """
+        self._pops_this_episode = 0
 
     @property
     def exhausted(self) -> bool:

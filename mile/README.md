@@ -1,81 +1,210 @@
-# MILE — Milestone-Grounded Closed-Loop Imagination and Execution
+<div align="center">
 
-给冻结的 VLA（DM0.5 / π0）外挂"预判—验证—回退"闭环的代码工程。
-对应文档：`../ICML2027_VLA世界模型研究计划.md`、`../MILE_技术设计文档.md`、`../main.tex`。
+# MILE: Milestone-Grounded Closed-Loop Imagination for Long-Horizon VLA Policies
 
-> 本代码在开发机（Windows）上只做语法检查；**实际运行请在 GPU 服务器（Ubuntu 22.04 + RTX 4090 ×8 + Docker）上进行**。
+**Think, Verify, Retreat — turning any chunked VLA into a closed-loop long-horizon agent**
 
-## 目录结构
+[![Paper](https://img.shields.io/badge/Paper-ICML%202027%20(submitted)-blue)]()
+[![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b)]()
+[![Benchmark](https://img.shields.io/badge/Benchmark-RoboDojo-green)](https://robodojo-benchmark.com/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-yellow)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)]()
+
+*Anonymous submission — code released for review. Identifying links intentionally omitted.*
+
+</div>
+
+---
+
+## Overview
+
+Modern Vision-Language-Action (VLA) policies execute **open-loop**: they map observations to action chunks reactively, with no mechanism to anticipate consequences, detect drift, or recover from their own mistakes. On the [RoboDojo](https://robodojo-benchmark.com/) benchmark this shows up as a characteristic failure pattern — policies earn substantial *partial* credit on long-horizon tasks but rarely complete them end-to-end, because small errors compound across steps.
+
+**MILE** (Milestone-grounded closed-**L**oop imagination and **E**xecution) is a framework for **spending test-time compute in embodied policies** — a lightweight, **base-agnostic wrapper** that closes the execution loop at the granularity of physical milestones:
+
+1. **Milestone extraction** — long-horizon tasks are segmented into short stages by sparse, physically grounded milestones (gripper transitions, contact onsets, visual-change events), discovered automatically from demonstrations *without sub-task annotation*;
+2. **Imagination** — a ~30M-parameter latent world model predicts, in the frozen VLA's own feature space, the outcome of each candidate action chunk, scored by a jointly trained steps-to-completion value head;
+3. **Conformal verification & rollback** — candidates are executed only if they pass a **conformally calibrated** acceptance test (accepted segments terminate within the verification radius with probability ≥ 1−α, distribution-free, finite-sample); a verified-milestone stack defines safe anchors, deviation triggers retreat-and-replan, and every retreat becomes hindsight-labeled **recovery data** for reward-free self-improvement.
+
+The base policy stays **completely frozen**. MILE trains only ~35M parameters.
+
+```
+   candidates ──► imagination ──► J(c) = alignment + λ·progress − η·uncertainty
+        ▲                              │
+        │                    accept? ──┴── reject ──► rollback to
+   frozen VLA (DM0.5)                  │              last verified milestone
+                                 execute chunk
+                                       │
+                        verified? push milestone + snapshot
+```
+
+## Key Results (RoboDojo)
+
+> ⚠️ Numbers below are placeholders pending final evaluation. The leaderboard
+> baselines (2026-09-17 snapshot) are public; our rows will be updated before release.
+
+| Method | Long-Horizon (score/SR%) | Memory (score/SR%) | Avg (score/SR%) |
+|---|---|---|---|
+| Liber-0 Preview (closed) | 45.98 / 33.17 | 37.77 / 37.33 | 30.74 / 25.52 |
+| GPT-6-Astra (board baseline) | 21.45 / 8.25 | 43.04 / 38.67 | 28.97 / 22.48 |
+| GalaxeaVLA (G0.5) | 44.12 / 32.25 | 8.61 / 7.33 | 20.23 / 14.88 |
+| DM0.5 (our base) | 33.70 / 19.50 | 47.74 / — | 24.98 / 19.34 |
+| **DM0.5 + MILE (ours)** | **TBD** | **TBD** | **TBD** |
+| π0 + MILE (ours) | TBD | TBD | TBD |
+
+## Installation
+
+MILE is developed and evaluated on Ubuntu 22.04 + NVIDIA RTX 4090/A100.
+We recommend running inside the official Docker images of our dependencies.
+
+```bash
+# 1. Base policy: DM0.5 (OpenDM) + official RoboDojo-Sim fine-tuned checkpoint
+git clone https://github.com/dexmal/opendm.git
+docker run -it --rm --gpus all --network host --shm-size=16g \
+  -v $PWD:/app/opendm -w /app/opendm dexmal/opendm:latest /bin/bash
+# DM05-MEM-Robodojo-Sim (Dexmal, 2026-08-26): the exact leaderboard checkpoint
+# (24.90 score / 19.34% SR). The directory MUST contain its norm_stats.json.
+pip install -U "huggingface_hub[cli]"
+hf download Dexmal/DM05-MEM-Robodojo-Sim \
+  --local-dir ./checkpoints/DM05-MEM-Robodojo-Sim
+# ModelScope mirror: modelscope download --model Dexmal/DM05-MEM-Robodojo-Sim \
+#   --local_dir ./checkpoints/DM05-MEM-Robodojo-Sim
+
+# 2. Benchmark: RoboDojo (Isaac Sim / Isaac Lab)
+git clone https://github.com/RoboDojo-Benchmark/RoboDojo.git
+# follow the official setup; XPolicyLab is used as the policy interface
+
+# 3. MILE itself
+git clone <this-repo> && cd mile
+pip install torch --index-url https://download.pytorch.org/whl/cu121  # CUDA build first
+pip install -r requirements.txt   # see the file header for external (non-pip) components
+pip install -e .
+```
+
+Launch the frozen base policy inference service (see the official
+[DM05 Inference Guide](https://github.com/dexmal/opendm/blob/main/docs/en/dm05_inference.md)
+and the RoboDojo guide `docs/en/dm05_robodojo.md` for the exact entry point):
+
+```bash
+script/dm05_launcher.sh --task inference \
+  --exp <robodojo entry from docs/en/dm05_robodojo.md> \
+  --model-config.model-name-or-path ./checkpoints/DM05-MEM-Robodojo-Sim \
+  --model-config.chunk-size 50 \
+  --inference-config.output-action-dim 14 \
+  --inference-config.image-prompts "Head" "Left wrist" "Right wrist" \
+  --inference-config.max-history-images 20 \
+  --data-config.is-history \
+  --inference-config.port 7891
+```
+
+MILE talks to the service via the official **`POST /v1/infer`** JSON API
+(`observation.prompt/state/images/history_images` + `sampling.seed` for
+candidate sampling; the legacy `/process_frame` multipart endpoint is being
+phased out and is not used).
+
+Official RoboDojo-Sim protocol for this checkpoint (kept identical in MILE so
+our numbers are comparable to the leaderboard):
+camera order head / left-wrist / right-wrist; absolute 14-DoF joint-position
+actions; 50-step chunks with **only the first 25 steps executed** per decision
+(`base.exec_horizon: 25` in `configs/default.yaml`); up to 20 head-camera
+history frames at 1 FPS, left-padded at episode start. Policy integration goes
+through XPolicyLab (see XPolicyLab PR #101; if merged, use its main branch).
+
+## Quickstart
+
+All hyper-parameters live in [`configs/default.yaml`](configs/default.yaml).
+
+```bash
+# S1 — milestone banks (v1: official sub-step boundaries; v2: automatic cues)
+python -m mile.scripts.extract_milestones --use-official --demo-dir /path/to/demos
+
+# S2 — train the latent world model + value head (1×4090, ~1–2 days)
+python -m mile.scripts.train_wm --config configs/default.yaml
+
+# S3 — calibrate thresholds on the 8 calibration tasks ONLY
+python -m mile.scripts.calibrate --tasks <task1> ... <task8>
+
+# S4 — zero-tuning evaluation on the 34 held-out tasks
+python -m mile.scripts.run_eval --wm-ckpt runs/wm_v1/wm_final.pt --tasks <task ids...>
+
+# Ablations
+python -m mile.scripts.run_eval --open-loop ...          # bare base policy
+# set controller.num_candidates: 1 in the config         # w/o verification
+# set controller.radius: inf                              # w/o rollback
+```
+
+**Anti-overfitting protocol.** All thresholds are tuned on 8 calibration tasks
+only; the remaining 34 tasks are evaluated with zero parameter tuning.
+Each task runs 50 episodes (25 standard + 25 randomized scenes), reporting the
+official sub-step-sensitive Score and Success Rate with 95% confidence intervals.
+
+## Repository Structure
 
 ```
 mile/
-├── configs/default.yaml          # 全部超参数（唯一改配置的地方）
+├── configs/default.yaml        # every knob in one place
 ├── mile/
-│   ├── wm/
-│   │   ├── model.py              # JEPA 式 latent 世界模型 + 进度价值头 + 3头集成
-│   │   ├── data.py               # 滑窗数据集（40万三元组）
-│   │   └── train.py              # 训练循环（AdamW + cosine + bf16）
-│   ├── extractor/
-│   │   ├── cues.py               # 三路里程碑线索（运动学/接触/视觉）
-│   │   └── extractor.py          # top-K 选择、DTW 对齐、里程碑库构建
-│   ├── controller/
-│   │   ├── scoring.py            # J(c) 打分、过线判定、里程碑到达判定
-│   │   ├── stack.py              # 已验证里程碑栈（含物理快照）
-│   │   ├── controller.py         # MILE 控制器（论文 Algorithm 1）
-│   │   └── evaluate.py           # RoboDojo 评测循环（50局/任务，标准+随机）
-│   ├── base/
-│   │   └── dm05_client.py        # DM0.5 HTTP 客户端 + 特征 hook（本地模式）
-│   ├── env/
-│   │   └── robodojo_env.py       # Isaac Lab 环境封装（快照存档/读档）
-│   └── scripts/
-│       ├── extract_milestones.py # S1: 里程碑库（v1 用官方子步骤边界）
-│       ├── train_wm.py           # S2: 训练世界模型
-│       ├── calibrate.py          # S3: 8 任务标定（r, τ_J, λ, η）
-│       └── run_eval.py           # S4: 34 任务零调参评测
-└── README.md
+│   ├── wm/                     # latent world model
+│   │   ├── model.py            #   JEPA-style predictor + value head + 3-head ensemble
+│   │   ├── data.py             #   sliding-window dataset + progress labels
+│   │   └── train.py            #   training loop (AdamW, cosine, bf16)
+│   ├── extractor/              # milestone extraction
+│   │   ├── cues.py             #   kinematic / contact / visual-change cues
+│   │   └── extractor.py        #   top-K selection, DTW alignment, bank builder
+│   ├── controller/             # closed-loop execution
+│   │   ├── scoring.py          #   J(c) verification scoring
+│   │   ├── stack.py            #   verified-milestone stack with snapshots
+│   │   ├── controller.py       #   MILE controller (Algorithm 1)
+│   │   └── evaluate.py         #   RoboDojo evaluation protocol
+│   ├── base/dm05_client.py     # frozen DM0.5 client (HTTP) + feature hook
+│   ├── env/robodojo_env.py     # Isaac Lab wrapper: state save/restore
+│   └── scripts/                # S1–S4 entry points
+└── docs/SETUP_zh.md            # 中文部署与接口说明
+    docs/CODE_GUIDE_zh.md       # 逐文件代码详解（中文）
 ```
 
-## 服务器部署顺序（对应研究计划 W1-W8）
+> 📖 Per-file code walkthrough (Chinese): [docs/CODE_GUIDE_zh.md](docs/CODE_GUIDE_zh.md)
 
-```bash
-# W1: 环境（在服务器上）
-git clone https://github.com/dexmal/opendm.git && cd opendm
-docker run -it --rm --gpus all --network host --shm-size=16g \
-  -v $PWD:/app/opendm -w /app/opendm dexmal/opendm:latest /bin/bash
-# 另开容器部署 RoboDojo (Isaac Sim/Lab)：
-git clone https://github.com/RoboDojo-Benchmark/RoboDojo.git
+## Method in 60 Seconds
 
-# W1 检查点：启动 DM05-robotwin2 推理服务并复现榜单数字
-modelscope download --model Dexmal/DM05-robotwin2-bf16 --local_dir ./checkpoints/DM05-robotwin2-bf16
-script/dm05_launcher.sh --task inference --nproc_per_node 1 \
-  --model-config.model-name-or-path ./checkpoints/DM05-robotwin2-bf16 \
-  --model-config.chunk-size 50 --inference-config.port 7891
+At every action-chunk decision point (~5 s), the controller:
 
-# S1 (W3): 里程碑库 —— v1 直接用官方子步骤边界
-python -m mile.scripts.extract_milestones --use-official --demo-dir /path/to/demos
+1. samples **C=4** candidate chunks from the frozen flow-matching policy (free multimodality via different noise seeds);
+2. **imagines** each outcome with the latent world model;
+3. **scores** candidates by milestone alignment + imagined progress − ensemble uncertainty, and executes the best — *only if it clears a calibrated threshold* (otherwise: rollback);
+4. after execution, **verifies** the realized observation against the target milestone: on success it pushes the milestone (with a full physics snapshot) onto the verified stack; on repeated deviation it **retreats** to the most recent verified anchor and replans.
 
-# S2 (W4): 训练世界模型（先用 prepare_latents 生成滑窗数据，见 wm/data.py 注释）
-python -m mile.scripts.train_wm --config configs/default.yaml
+Irreversible stages (pouring, cutting) are flagged one-way: verified but never rolled back. A proposition in the paper shows this re-anchoring converts the multiplicative compounding-error bound of behavior cloning into an additive one over verified segments.
 
-# S3 (W5): 8 个标定任务上调参
-python -m mile.scripts.calibrate --tasks <task1> ... <task8>
+## Roadmap
 
-# S4 (W6-8): 34 个任务零调参评测
-python -m mile.scripts.run_eval --wm-ckpt runs/wm_v1/wm_final.pt --tasks <34 task ids>
-# 消融：--open-loop 跑裸基座；改 configs 里的 num_candidates=1 去验证；等
+- [x] Latent world model + value head (reference implementation)
+- [x] Milestone extractor (rule-based v1 + cue-based v2)
+- [x] Controller with verification & rollback
+- [ ] RoboDojo full-suite numbers (in progress)
+- [ ] Automatic-extraction ablation vs. official sub-step boundaries
+- [ ] RoboDojo-RealEval remote real-robot results
+- [ ] π0 as second base policy
+
+## Citation
+
+```bibtex
+@inproceedings{mile2027,
+  title     = {Think, Verify, Retreat: Milestone-Grounded Closed-Loop
+               Imagination for Long-Horizon Vision-Language-Action Policies},
+  author    = {Anonymous},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2027},
+  note      = {Submitted}
+}
 ```
 
-## 待你在服务器上补的接口（标了 TODO 的位置）
+## Acknowledgements
 
-1. `mile/env/robodojo_env.py::_make_env` —— 接 RoboDojo 官方任务注册表（XPolicyLab）；
-2. `mile/scripts/calibrate.py::eval_fn` —— 用 `run_episode` 实现标定评测；
-3. `mile/scripts/run_eval.py::env_factory` —— 同上；
-4. 一个 `prepare_latents.py` 预处理脚本：用 `FeatureHook` 批量把 3,500 条示范
-   转成 `wm/data.py` 期望的 npz 格式（latents/actions/milestones/text_emb/snapshots）。
+- [DM0.5 / OpenDM](https://github.com/dexmal/opendm) (Dexmal) — frozen base policy
+- [RoboDojo](https://github.com/RoboDojo-Benchmark/RoboDojo) — benchmark & evaluation protocol
+- AHEAD, StructVLA, World-in-Loop, WoVR, GigaBrain — conceptual baselines discussed in the paper
 
-## 关键设计约束（改代码前必读）
+## License
 
-- **基座全程冻结**：只训练 wm/ 下的约 35M 参数；
-- 标定只许动 8 个 calibration 任务，34 个 held-out 任务禁调参；
-- 仿真回退必须用 `env.save_state()/restore_state()`，不要重新 reset 整局；
-- 不可逆阶段（倒水/切割）在 `controller.one_way_ranks` 登记，禁止回退。
+Apache 2.0. See [LICENSE](LICENSE). Dependencies retain their own licenses.

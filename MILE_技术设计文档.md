@@ -276,5 +276,5 @@ DM0.5 的 Embodiment CoT 已有"环境事件预测"任务族。训练阶段 2 �
 
 ## 11. 与研究计划的对照
 
-- W1 部署清单更新：OpenDM Docker + RoboDojo(Isaac Lab) + XPolicyLab；DM0.5 已有 RoboTwin2.0 SFT 权重（DM05-robotwin2，14 维双臂动作、3 路相机），RoboDojo 与 RoboTwin2 同团队同数据格式，**微调起点可能直接用 DM05-robotwin2 而非从零 co-train**——W1 第一天就验证这个兼容性，能省 1-2 周。
+- W1 部署清单更新：OpenDM Docker + RoboDojo(Isaac Lab) + XPolicyLab；基座权重直接用**官方 RoboDojo 仿真微调检查点 DM05-MEM-Robodojo-Sim**（Dexmal 2026-08-26 发布，HF/ModelScope 开源，含 norm_stats.json；即榜单 24.90/19.34% 的同款权重）——不再需要从 DM05-robotwin2 迁移验证，W1 省掉兼容性验证直接复现榜单。官方协议要点（已写进 configs/default.yaml）：ARX X5 双臂 14 维绝对关节位置、相机顺序 头/左腕/右腕、每块 50 步只执行前 25 步（`exec_horizon: 25`，WM 想象窗口同步为 25）、MEM 检查点需最多 20 帧头相机历史 @1FPS 左侧补齐、策略接入走 XPolicyLab（PR #101）。
 - W3 里程碑提取器：v1 用官方子步骤边界（§2 末），自动提取为消融ui

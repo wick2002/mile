@@ -257,6 +257,7 @@ RoboDojo simulation suite~\cite{robodojo}: 42 tasks in five dimensions (generali
 
 \paragraph{Base policies.}
 \textbf{DM0.5}~\cite{dm05} (primary; leaderboard top) and $\pi_0$~\cite{pi0} (secondary; cross-base validation). For each base we compare: (i) base policy as-is; (ii) base + \mile{}; (iii) base + \mile{} $-$ verification; (iv) base + \mile{} $-$ rollback.
+For DM0.5 we use the official RoboDojo-Sim fine-tuned checkpoint (DM05-MEM-Robodojo-Sim) and keep its evaluation protocol identical to the leaderboard: head/left-wrist/right-wrist camera order, absolute 14-DoF joint-position actions, 50-step predicted chunks of which only the first $H{=}25$ steps are executed per decision, and up to 20 head-camera history frames at 1\,FPS (left-padded at episode start). \mile{}'s world model imagines exactly the executed 25-step prefix, so imagined and realized states are directly comparable.
 
 \paragraph{Baselines.}
 Public leaderboard numbers (2026-09-17 snapshot) for Liber-0 Preview~\cite{liber0} (closed-source, current rank 1: 30.74 score / 25.52\% success), GPT-6-Astra~\cite{gpt6astra} (official System-2 planning baseline), GalaxeaVLA, Hy-Embodied-0.5-VLA, $\pi_{0.5}$, X-VLA; plus \TODO{World-in-Loop / StructVLA adapted as wrapper baselines, if reproducible}. Since Liber-0 Preview is not publicly available, we compare against its official leaderboard numbers without re-running it.

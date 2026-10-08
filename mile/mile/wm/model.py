@@ -26,7 +26,10 @@ import torch.nn.functional as F
 class WMOutput:
     pred_latents: torch.Tensor   # [E, B, P, vlm_dim] ensemble predictions of z_{t+H}
     value: torch.Tensor          # [B] normalized steps-to-completion in [0, 1]
-    uncertainty: torch.Tensor    # [B, P] ensemble disagreement (variance)
+    # NOTE: per-patch, per-dimension variance over the ensemble — NOT collapsed
+    # to [B, P]. Callers must reduce it themselves (controller.py uses
+    # .mean(dim=(1, 2)) -> [B]); do not "fix" this to [B, P].
+    uncertainty: torch.Tensor    # [B, P, vlm_dim] ensemble disagreement (variance)
 
 
 class LatentWorldModel(nn.Module):

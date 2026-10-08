@@ -161,6 +161,8 @@ class MILEController:
                 rank=k_next, latent=realized_latent, env_snapshot=env_snapshot,
             ))
             self.deviation_streak = 0
+            # progress was made -> restore the consecutive rollback budget
+            self.stack.reset_pops()
             self._commit_recording(reached_rank=k_next, task_id=self.bank.task_id)
             return {"event": "verified", "rank": k_next, "dist": dist}
 
@@ -171,21 +173,43 @@ class MILEController:
 
     # --------------------------------------------------------- rollback
     def rollback(self) -> dict:
-        """Retreat to the most recent verified milestone (stack top)."""
+        """Retreat to the most recent verified milestone (stack top).
+
+        Consecutive rollbacks retreat one level deeper: the anchor that just
+        failed is popped, so the next rollback targets the milestone before it.
+        At most ``max_pop`` consecutive retreats are allowed; after that (or
+        with an empty stack) the episode aborts.
+
+        The ``pop()`` here is load-bearing — without it ``max_pop`` never
+        binds and every rollback in an episode returns the same anchor, so an
+        episode can spin for ``max_decisions`` rounds making no progress (and
+        the reported rollback/abort statistics become meaningless).
+        """
         if self._current_stage_is_one_way():
             self._discard_recording()
             return {"event": "abort", "reason": "one-way stage"}
 
-        entry = self.stack.rollback_target()
-        if entry is None:
+        if len(self.stack) == 0:
             self._discard_recording()
             return {"event": "abort", "reason": "no verified anchor"}
+        if self.stack.exhausted:
+            self._discard_recording()
+            return {"event": "abort", "reason": "max_pop exceeded"}
+
+        entry = self.stack.rollback_target()
+        if entry is None:                       # defensive: budget just ran out
+            self._discard_recording()
+            return {"event": "abort", "reason": "max_pop exceeded"}
+
+        self.stack.pop()          # this anchor just failed -> retreat deeper next time
         self.deviation_streak = 0
         self._begin_recording(anchor_rank=entry.rank)   # hindsight recovery (§4.6)
         return {
             "event": "rollback_to",
             "rank": entry.rank,
             "env_snapshot": entry.env_snapshot,
+            # depth 1 = first retreat of this consecutive streak
+            "depth": self.stack.pops_this_episode,
         }
 
     def _current_stage_is_one_way(self) -> bool:
