@@ -199,6 +199,15 @@
 
 ## 6. 命令行脚本（`mile/scripts/`）
 
+### `mile/scripts/prepare_latents.py`（S2 前置，新增）
+把原始示范批量转成 `wm/data.py` 期望的 npz（**必须在 OpenDM 容器内跑**——`/v1/infer` 只返回动作，取不到 patch 特征）。
+- 产出：扁平目录下一个 demo 一个文件 `<task_id>_<idx:06d>.npz`，含 `latents [T,P,D]` / `actions [T,A]` / `milestones [K]` / `text_emb [K+1,Tt,Dt]`。`SlidingWindowDataset` 是**非递归** glob，所以文件必须扁平放，不能按任务分子目录。
+- 特征来源：`FeatureHook(backbone, layer_index=base.feature_layer=-2)` 抓 VLM 倒数第二层，取前 `num_patches`(256) 个位置。为此给 `FeatureHook` 补了 `reset()` 与 `last_batch_patch_tokens()`（原 `last_patch_tokens()` 只返回 batch 第 0 个，不支持批处理）。
+- 阶段文本：`world_model.stage_text_template`（默认 `"{task}: stage {i}"`）渲染 K+1 条描述，再用同一 VLM 的 text tower 编码后**分段均值池化**成 `text_tokens`(4) 个 token。离线与线上必须用同一模板和同一池化，否则语义错位。
+- 里程碑：默认取示范里的 `official_substeps`；缺失时**拒绝猜测**，除非显式给 `--k-fallback`（均匀切分）。
+- 磁盘：latents 占大头（T×P×D×dtype）。默认 fp16、T≈300 时约 375 MiB/条，3,500 条约 1.3 TiB。先跑 `--estimate-only`。**不要靠抽帧缩小**——WM 窗口必须等于 `exec_horizon`(25) 个真实控制步，抽帧会把它悄悄变成 `25×stride` 步。
+- 容器属性路径不匹配时，用 `--adapter pkg.mod:ClassName` 注入自己的 `FeatureBackend`，不要改脚本。
+
 ### `mile/scripts/extract_milestones.py`（S1，W3）
 遍历每个任务的示范目录，`--use-official` 时直接用官方子步骤边界（v1 保底），否则跑三线索自动提取；输出 `milestone_banks.pkl`（42 个任务的里程碑库）。
 

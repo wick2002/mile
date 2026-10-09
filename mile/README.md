@@ -118,6 +118,14 @@ All hyper-parameters live in [`configs/default.yaml`](configs/default.yaml).
 # S1 — milestone banks (v1: official sub-step boundaries; v2: automatic cues)
 python -m mile.scripts.extract_milestones --use-official --demo-dir /path/to/demos
 
+# S2-prereq — demos -> per-trajectory .npz (run INSIDE the OpenDM container:
+# /v1/infer returns actions only, patch features need the in-process hook)
+python -m mile.scripts.prepare_latents --demo-dir /path/to/demos \
+       --out-dir data/robodojo_demos_latents --model-path <DM0.5 ckpt>
+#   run with --estimate-only first for the disk projection (~1.3 TiB for all
+#   3,500 demos at fp16); do NOT subsample frames — the WM window must stay
+#   exactly exec_horizon (25) real control steps.
+
 # S2 — train the latent world model + value head (1×4090, ~1–2 days)
 python -m mile.scripts.train_wm --config configs/default.yaml
 
@@ -155,10 +163,14 @@ mile/
 │   │   ├── scoring.py          #   J(c) verification scoring
 │   │   ├── stack.py            #   verified-milestone stack with snapshots
 │   │   ├── controller.py       #   MILE controller (Algorithm 1)
+│   │   ├── conformal.py        #   split-conformal threshold calibration
+│   │   ├── recovery.py         #   hindsight recovery buffer + distillation
 │   │   └── evaluate.py         #   RoboDojo evaluation protocol
 │   ├── base/dm05_client.py     # frozen DM0.5 client (HTTP) + feature hook
 │   ├── env/robodojo_env.py     # Isaac Lab wrapper: state save/restore
-│   └── scripts/                # S1–S4 entry points
+│   └── scripts/
+│       ├── prepare_latents.py  #   demos -> .npz (S2 prereq, in-container)
+│       └── extract_milestones / train_wm / calibrate / run_eval / run_rounds
 └── docs/SETUP_zh.md            # 中文部署与接口说明
     docs/CODE_GUIDE_zh.md       # 逐文件代码详解（中文）
 ```

@@ -42,6 +42,7 @@
 | `mile/wm/train.py` | `window` 读取逻辑、cosine+warmup（`train.py:18-21`）、bf16 | ✅ |
 | `mile/wm/data.py` | 滑窗数据集、`make_dataloader(chunk_len=window)` | ✅ |
 | `mile/env/robodojo_env.py` | `save_state` / `restore_state`（含 5 步 settle） | ⚠️ `_make_env` 为桩 |
+| `mile/scripts/prepare_latents.py` | **2026-10-08 新建**：示范 → npz（`latents/actions/milestones/text_emb`）；`FeatureHook` 批处理抽特征；阶段文本模板化 + 分段池化；`--estimate-only` 磁盘预估；`--adapter` 注入自定义 backend。已用真实 numpy 跑通与 `wm/data.py` 的契约验证 | ✅ 骨架完成，待适配示范实际字段 |
 | `docs/SETUP_zh.md` | 2026-10-08 重写版：`/v1/infer` 契约表、官方协议表、W1 五项冒烟、S1–S5、TODO 表 | ✅ |
 | `docs/CODE_GUIDE_zh.md` | 已同步 Plan A+ 与 `/v1/infer` | ✅ |
 | `README.md` / `requirements.txt` / `pyproject.toml` / `LICENSE` / `.gitignore` | 齐备 | ✅ |
@@ -155,7 +156,7 @@ randomized=True  -> ['set_randomized(True)',  'reset(seed=801765195)']  scene=ra
 
 ### 3.3 缺失文件
 
-- **`mile/scripts/prepare_latents.py`**：`SETUP_zh.md` 提到需要离线抽取 VLM patch tokens 落盘供 WM 训练，但目录里**没有这个脚本**。这是 S2 的前置，必须补。
+- ~~`mile/scripts/prepare_latents.py` 不存在~~ → **2026-10-08 已补**（见 §1 表格）。仍需你按 RoboDojo 示范实际字段适配 `load_demo()`，并确认容器内 VLM backbone 属性路径（不匹配时用 `--adapter`）。
 
 ### 3.4 工程状态
 
@@ -169,7 +170,7 @@ randomized=True  -> ['set_randomized(True)',  'reset(seed=801765195)']  scene=ra
 - [x] §2-B episode seed 不可复现（2026-10-08，已验证）
 - [x] §2-C `randomized` 顺序改为显式契约（2026-10-08，已验证；原诊断方向有误，见 §2-C 更正）
 - [x] §2-D `uncertainty` 注释形状（2026-10-08，已验证）
+- [x] 补 `mile/scripts/prepare_latents.py`（2026-10-08，S2 前置；契约已验证）
 - [ ] §2-E `restore_state` 零动作维度
-- [ ] 补 `mile/scripts/prepare_latents.py`（S2 前置）
 - [ ] Mondrian / 分组条件保形
 - [ ] re-approach 回退变体

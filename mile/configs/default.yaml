@@ -43,6 +43,9 @@ world_model:
   window: 25
   action_tokens: 4           # 25 步窗口压缩为 4 个 token（Conv1d k=7,s=6 自动适配）
   text_tokens: 4
+  # 阶段描述模板，{task} 任务名、{i} 1-based 阶段序号。
+  # prepare_latents.py 与线上 server 必须用同一模板，否则 text_emb 语义错位。
+  stage_text_template: "{task}: stage {i}"
   n_ensemble: 3              # 不确定性集成头数
   mask_ratio: 0.2            # 输入 patch 掩码比例
   loss_weights:

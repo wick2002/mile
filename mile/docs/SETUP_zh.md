@@ -112,8 +112,14 @@ script/dm05_launcher.sh --task inference \
 # S1 (W3) 里程碑库：v1 直接用官方子步骤边界，v2 用三线索自动提取
 python -m mile.scripts.extract_milestones --use-official --demo-dir /path/to/demos
 
-# 数据准备（S2 前置，需在容器内跑）：用 FeatureHook 把示范转成 npz
-#   latents / actions / milestones / text_emb —— 见 wm/data.py 顶部注释
+# 数据准备（S2 前置，**必须在 OpenDM 容器内跑**）：
+#   /v1/infer 只返回动作，取不到 patch 特征，所以用 FeatureHook 在进程内抓
+python -m mile.scripts.prepare_latents --demo-dir /path/to/demos \
+       --out-dir data/robodojo_demos_latents \
+       --model-path ./checkpoints/DM05-MEM-Robodojo-Sim --batch-size 32
+#   先跑 --estimate-only 看磁盘开销（默认 T≈300、P=256、D=2560、fp16 约 375
+#   MiB/条，3,500 条约 1.3 TiB）；别用抽帧缩小——WM 窗口必须等于 exec_horizon
+#   个真实控制步，抽帧会把它悄悄变成 25×stride 步。
 
 # S2 (W4) 训练世界模型 + 价值头（1×4090，约 1–2 天）
 python -m mile.scripts.train_wm --config configs/default.yaml
@@ -145,7 +151,7 @@ python -m mile.scripts.run_rounds --wm-ckpt runs/wm_v1/wm_final.pt --rounds 3
 | 1 | `mile/env/robodojo_env.py::_make_env` | 接 RoboDojo 官方任务注册表（XPolicyLab） |
 | 2 | `mile/scripts/calibrate.py::collect_calibration_pairs` | 裸基座 rollout 收集 (J, d) 对（用 `τ_J=-inf` 全接受以便观察真实偏差） |
 | 3 | `mile/scripts/run_eval.py::env_factory` | 同上，接 RoboDojo 环境 |
-| 4 | `mile/scripts/prepare_latents.py`（新文件） | 用 `FeatureHook` 批量把 3,500 条示范转成 `wm/data.py` 期望的 npz |
+| 4 | `mile/scripts/prepare_latents.py` | 已补脚本；仍需按你的 RoboDojo 示范实际字段适配 `load_demo()`，并确认容器里 VLM backbone 的属性路径（不匹配时用 `--adapter`） |
 | 5 | `configs/default.yaml::base.robot_type` | 确认 ARX X5 在 norm_stats 中的机型字符串 |
 
 **另外一项未实现的高优先级功能**：`rollback()` 的 **re-approach（无状态读档）变体**——
@@ -180,7 +186,9 @@ mile/
 │   │   └── evaluate.py                 # 评测循环（50 局/任务，标准 + 随机）
 │   ├── base/dm05_client.py             # /v1/infer 客户端 + 历史帧缓冲 + FeatureHook
 │   ├── env/robodojo_env.py             # Isaac Lab 封装（存档/读档）
-│   └── scripts/{extract_milestones,train_wm,calibrate,run_eval,run_rounds}.py
+│   └── scripts/
+│       ├── prepare_latents.py          # 示范 → npz（latents/actions/milestones/text_emb）
+│       └── {extract_milestones,train_wm,calibrate,run_eval,run_rounds}.py
 ├── docs/{SETUP_zh.md, CODE_GUIDE_zh.md}
 ├── requirements.txt / pyproject.toml / LICENSE / .gitignore
 └── README.md                            # GitHub 英文自述

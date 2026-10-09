@@ -179,6 +179,20 @@ class FeatureHook:
         hidden = output[0] if isinstance(output, tuple) else output
         self._captured.append(hidden.detach().cpu())
 
+    def reset(self) -> None:
+        """Drop captured tensors — call before every batched forward."""
+        self._captured.clear()
+
+    def last_batch_patch_tokens(self) -> np.ndarray:
+        """Full [B, seq, d] hidden states of the most recent forward pass.
+
+        Use this for batched offline feature extraction (prepare_latents);
+        `last_patch_tokens` only returns batch element 0.
+        """
+        if not self._captured:
+            raise RuntimeError("no forward pass captured yet")
+        return self._captured[-1].float().numpy()
+
     def last_patch_tokens(self) -> np.ndarray:
         if not self._captured:
             raise RuntimeError("no forward pass captured yet")
