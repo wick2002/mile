@@ -59,6 +59,13 @@ We recommend running inside the official Docker images of our dependencies.
 
 ```bash
 # 1. Base policy: DM0.5 (OpenDM) + official RoboDojo-Sim fine-tuned checkpoint
+#
+# Two modes (base.mode in configs/default.yaml):
+#   local (recommended) - load DM0.5 in-process, no HTTP service.
+#       MILE needs VLM patch tokens at every verification point and /v1/infer
+#       returns actions only, so in-process gives actions AND features from one
+#       forward pass. See docs/DEPLOY_DM05_LOCAL_zh.md.
+#   http - run the OpenDM Flask service below and call POST /v1/infer.
 git clone https://github.com/dexmal/opendm.git
 docker run -it --rm --gpus all --network host --shm-size=16g \
   -v $PWD:/app/opendm -w /app/opendm dexmal/opendm:latest /bin/bash

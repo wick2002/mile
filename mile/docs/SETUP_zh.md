@@ -3,7 +3,8 @@
 > **MILE** = Milestone-grounded closed-Loop imagination and Execution
 > 给冻结的 VLA（DM0.5 / π0）外挂"想象—验证—回退—自改进"闭环。
 > 配套文档：`ICML2027_VLA世界模型研究计划.md`、`MILE_技术设计文档.md`、`main.tex`、
-> `MILE_创新性与可行性评估.md`（投稿前评估）、`docs/CODE_GUIDE_zh.md`（逐文件说明）。
+> `MILE_创新性与可行性评估.md`（投稿前评估）、`docs/CODE_GUIDE_zh.md`（逐文件说明）、
+> **`docs/DEPLOY_DM05_LOCAL_zh.md`（进程内不启服务部署 DM0.5，推荐）**。
 >
 > 本仓库在开发机（Windows）上只做语法检查；**实际运行请在 GPU 服务器**（Ubuntu 22.04 + RTX 4090/A100 + Docker + NVIDIA Container Toolkit）。
 > 最后更新：2026-10-08（Plan A+，接口已切到官方 `/v1/infer`）
@@ -33,7 +34,18 @@ pip install -e .                  # pyproject.toml（README 里的安装命令�
 
 ---
 
-## 2. 启动 DM0.5 推理服务
+## 2. DM0.5 接入方式（二选一）
+
+### 2a. `base.mode: local` —— 进程内加载，**推荐**
+
+不启服务，直接在 Python 进程里加载权重。除了省一个进程，更重要的是
+**一次前向同时拿到动作和 VLM patch 特征**（`/v1/infer` 只返回动作，而 MILE
+每个验证点都要 `obs["patch_tokens"]`）。完整步骤见 **`docs/DEPLOY_DM05_LOCAL_zh.md`**。
+
+### 2b. `base.mode: http` —— OpenDM 的 Flask 服务
+
+按下面启服务，然后客户端走 `POST /v1/infer`。注意此模式下你必须**另想办法**
+提供 `patch_tokens`（额外加载一份 VLM 抽特征），否则评测循环跑不起来。
 
 ```bash
 git clone https://github.com/dexmal/opendm.git && cd opendm

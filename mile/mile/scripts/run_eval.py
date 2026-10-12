@@ -12,7 +12,7 @@ import pickle
 import torch
 import yaml
 
-from mile.base.dm05_client import BasePolicyClient, DM05Config
+from mile.base.factory import build_base_client
 from mile.controller.controller import ControllerConfig, MILEController
 from mile.controller.evaluate import evaluate
 from mile.wm.model import LatentWorldModel
@@ -34,22 +34,9 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
-    b = cfg["base"]
-    base_client = BasePolicyClient(DM05Config(
-        server_url=b["server_url"],
-        api_path=b.get("api_path", "/v1/infer"),
-        action_dim=b["action_dim"],
-        chunk_len=b["chunk_len"],
-        image_keys=tuple(b["image_keys"]),
-        history_frames=b.get("history_frames", 20),
-        history_fps=b.get("history_fps", 1),
-        robot_type=b.get("robot_type"),
-        control_mode=b.get("control_mode"),
-        speed=b.get("speed"),
-        num_diffusion_steps=b.get("num_diffusion_steps", 10),
-        image_format=b.get("image_format", "JPEG"),
-        image_quality=b.get("image_quality", 95),
-    ))
+    # base.mode: "local" loads DM0.5 in-process (no HTTP service);
+    #            "http"  talks to the OpenDM /v1/infer service.
+    base_client = build_base_client(cfg)
 
     controller_factory = None
     buffer = None
@@ -101,7 +88,8 @@ def main() -> None:
 
     evaluate(env_factory, args.tasks, controller_factory, base_client,
              episodes_per_task=cfg["eval"]["episodes_per_task"], out_path=args.out,
-             exec_horizon=cfg["base"].get("exec_horizon"))
+             exec_horizon=cfg["base"].get("exec_horizon"),
+             record_stride=int(cfg["eval"].get("record_stride", 1)))
 
     if buffer is not None and args.recovery_buffer:
         import pickle as _pkl

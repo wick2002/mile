@@ -19,7 +19,8 @@ def run_episode(env, controller: MILEController | None, base_client,
                 instruction: str, episode_seed: int,
                 max_decisions: int = 40,
                 exec_horizon: int | None = None,
-                randomized: bool = False) -> dict:
+                randomized: bool = False,
+                record_stride: int = 1) -> dict:
     """One episode. controller=None means bare base policy (open-loop).
 
     exec_horizon: execute only the first N steps of each predicted chunk
@@ -58,10 +59,12 @@ def run_episode(env, controller: MILEController | None, base_client,
             continue
 
         # execute the chunk step by step (record steps for recovery data);
-        # official protocol executes only the first exec_horizon steps
-        for a in chunk[:exec_horizon]:
+        # official protocol executes only the first exec_horizon steps.
+        # record_stride: encoding a step costs a full VLM forward, so the
+        # recovery buffer is subsampled (it only feeds value-head distillation).
+        for i, a in enumerate(chunk[:exec_horizon]):
             obs = env.step(a)
-            if controller is not None:
+            if controller is not None and i % max(1, record_stride) == 0:
                 controller.record_step(obs["patch_tokens"], a)
 
         if controller is not None:
@@ -95,7 +98,8 @@ def stable_seed(task_id: str, ep: int) -> int:
 
 def evaluate(env_factory, task_ids: list[str], controller_factory,
              base_client, episodes_per_task: int, out_path: str,
-             exec_horizon: int | None = None) -> dict:
+             exec_horizon: int | None = None,
+             record_stride: int = 1) -> dict:
     """Full benchmark sweep. Writes per-task results to out_path (jsonl)."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -112,7 +116,8 @@ def evaluate(env_factory, task_ids: list[str], controller_factory,
                                 instruction=env.task_instruction(),
                                 episode_seed=stable_seed(task_id, ep),
                                 exec_horizon=exec_horizon,
-                                randomized=randomized)
+                                randomized=randomized,
+                                record_stride=record_stride)
                 scores.append(r["score"])
                 successes.append(float(r["success"]))
                 fout.write(json.dumps({"task": task_id, "ep": ep,

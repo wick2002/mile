@@ -3,6 +3,12 @@ seed: 42
 
 base:
   name: dm05
+  # ---- 基座接入方式 ----
+  # http : 连 OpenDM 的 Flask 服务（POST /v1/infer）
+  # local: 进程内直接加载权重，不启服务 —— 见 mile/base/dm05_local.py
+  # 选 local 的理由不只是"少一个进程"：MILE 每个验证点都要 VLM patch tokens，
+  # 而 /v1/infer 只返回动作，拿不到特征。进程内一次前向同时给出动作和特征。
+  mode: local
   # OpenDM HTTP 推理服务地址（docker 启动后）
   server_url: "http://127.0.0.1:7891"
   # 官方推荐 JSON API；旧版 /process_frame multipart 接口将逐步淘汰
@@ -15,20 +21,47 @@ base:
   vlm_dim: 2560
   num_patches: 256
   action_dim: 14             # ARX X5 双臂绝对关节位置
-  chunk_len: 50              # 策略原生输出 50 步动作块
-  exec_horizon: 25           # RoboDojo 官方适配器只执行每个块的前 25 步（榜单协议）
+  # ✅ 已核对（2026-10-10，HF model card 原文）：
+  #   "The model generates 14-dimensional absolute joint-position action chunks
+  #    of length 50, and the RoboDojo evaluation adapter executes the first 25
+  #    actions from each predicted chunk."
+  # 所以 chunk_len=50 是对的。RoboDojo 训练入口 / deploy.yml 里的 25/25 是
+  # cover_blocks 单任务 SFT entry 的设定，不适用于 DM05-MEM-Robodojo-Sim 通用权重。
+  chunk_len: 50
+  exec_horizon: 25           # 每个决策点实际执行的步数（WM 窗口必须与之相等）
   # MEM 检查点还需最多 20 帧头相机历史（1 FPS，episode 开头左侧补齐；
   # 要求服务以 --data-config.is-history 启动）
   history_frames: 20
   history_fps: 1
   # 相机顺序固定：头 / 左腕 / 右腕（按序映射到请求槽位 "1"/"2"/"3"，不可换序）
   image_keys: ["images_1", "images_2", "images_3"]
-  # 采样与机型档案（TODO(server)：对照 docs/en/dm05_robodojo.md 或
-  # norm_stats.json 确认 ARX X5 的 robot_type 精确字符串）
-  robot_type: null           # 例："ARX X5"
-  control_mode: "joint"      # MEM 默认
-  speed: "0.1"               # MEM 默认
-  num_diffusion_steps: 10    # 必须与服务启动的 diffusion-steps 一致
+  # ---- 条件化档案：这些值取自 OpenDM 源码，不要再改成"想当然"的值 ----
+  # opendm/dataset/robodojo.py 注册项 + XPolicyLab deploy.yml：
+  #   robot_type=Aloha、speed="0.5"、fps=25、history_slots=20、model_max_length=1536
+  # 传 None 表示"用数据集注册项里的默认值"，即上面这几个。
+  robot_type: null           # 明确留空 → Aloha（官方注册项）
+  control_mode: null         # 官方注册项里没有 control_mode，不要自己编
+  speed: "0.5"               # 官方注册项 / deploy.yml = 0.5（原来是 0.1，错的）
+  # ---- 进程内加载所需的路径（mode: local 才用）----
+  # OpenDM 仓库根目录（要能 import opendm.*，且 exp_entry 相对它解析）
+  opendm_root: "/path/to/opendm"
+  # 官方 RoboDojo 入口文件，等价于 launcher 的 --exp
+  exp_entry: "playground/dm05_mem_sft_robodojo_cover_blocks.py"
+  # 进程内抓 VLM patch tokens 供世界模型用：复用候选采样那次前向的 hook 输出，
+  # 零额外前向。默认开 —— 这正是选 mode: local 的核心理由（动作+特征一次前向）。
+  # 若 W1 冒烟第 3 项发现 hook 抓到的位置数 < num_patches，再关掉走
+  # prepare_latents.py 的离线路径。
+  enable_features: true
+  # 进程内加载参数（mode: local 时才用）
+  dataset_name: robodojo_sim_cover_blocks   # 必须是在 OpenDM 里注册过的名字
+  action_mode: absolute      # deploy.yml: model_action_mode = absolute
+  add_state: true
+  is_history: true           # MEM 检查点需要，且须与 max_history_images 配套
+  max_history_images: 20     # OpenDM 默认是 5！不设成 20 会直接报错
+  model_max_length: 1536     # deploy.yml 给的值（OpenDM 默认 1024）
+  backend: default           # 只能是 default；fast(TensorRT+CUDA graph) 会让特征 hook 失效
+  precision_policy: bf16_mixed
+  num_diffusion_steps: 10    # 必须与服务/训练一致
   image_format: "JPEG"       # /v1/infer 图像走 base64
   image_quality: 95
 
@@ -99,6 +132,10 @@ self_improve:
 eval:
   benchmark: robodojo
   episodes_per_task: 50      # 25 标准 + 25 随机
+  # 恢复片段录制抽帧：每 N 个执行步抽一次 VLM 特征。
+  # encode() 是一次完整模型前向，逐步录（stride=1）意味着每个决策点多 25 次前向。
+  # 恢复片段只用于价值头蒸馏，抽帧不损害语义。1 = 逐步（最贵）。
+  record_stride: 5
   calibration_tasks: 8       # 只在这 8 个任务上调参
   heldout_tasks: 34          # 其余任务零调参
   candidate_sweep: [1, 2, 4, 8]  # 计算量-成功率 scaling 曲线
