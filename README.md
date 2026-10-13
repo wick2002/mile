@@ -55,10 +55,21 @@ The base policy stays **completely frozen**. MILE trains only ~35M parameters.
 ## Installation
 
 MILE is developed and evaluated on Ubuntu 22.04 + NVIDIA RTX 4090/A100.
-We recommend running inside the official Docker images of our dependencies.
+
+> **Deploying on a fresh server?** Follow
+> [`docs/DEPLOY_SERVER_zh.md`](docs/DEPLOY_SERVER_zh.md) — a gate-by-gate runbook
+> from bare metal to the full S1→S5 pipeline. Start with
+> `python -m mile.scripts.check_env`, then `python -m mile.scripts.probe_dm05_local`.
 
 ```bash
 # 1. Base policy: DM0.5 (OpenDM) + official RoboDojo-Sim fine-tuned checkpoint
+#
+# Two modes (base.mode in configs/default.yaml):
+#   local (recommended) - load DM0.5 in-process, no HTTP service.
+#       MILE needs VLM patch tokens at every verification point and /v1/infer
+#       returns actions only, so in-process gives actions AND features from one
+#       forward pass. See docs/DEPLOY_DM05_LOCAL_zh.md.
+#   http - run the OpenDM Flask service below and call POST /v1/infer.
 git clone https://github.com/dexmal/opendm.git
 docker run -it --rm --gpus all --network host --shm-size=16g \
   -v $PWD:/app/opendm -w /app/opendm dexmal/opendm:latest /bin/bash
@@ -81,13 +92,26 @@ pip install -r requirements.txt   # see the file header for external (non-pip) c
 pip install -e .
 ```
 
-Launch the frozen base policy inference service:
+Launch the frozen base policy inference service (see the official
+[DM05 Inference Guide](https://github.com/dexmal/opendm/blob/main/docs/en/dm05_inference.md)
+and the RoboDojo guide `docs/en/dm05_robodojo.md` for the exact entry point):
 
 ```bash
-script/dm05_launcher.sh --task inference --nproc_per_node 1 \
+script/dm05_launcher.sh --task inference \
+  --exp <robodojo entry from docs/en/dm05_robodojo.md> \
   --model-config.model-name-or-path ./checkpoints/DM05-MEM-Robodojo-Sim \
-  --model-config.chunk-size 50 --inference-config.port 7891
+  --model-config.chunk-size 50 \
+  --inference-config.output-action-dim 14 \
+  --inference-config.image-prompts "Head" "Left wrist" "Right wrist" \
+  --inference-config.max-history-images 20 \
+  --data-config.is-history \
+  --inference-config.port 7891
 ```
+
+MILE talks to the service via the official **`POST /v1/infer`** JSON API
+(`observation.prompt/state/images/history_images` + `sampling.seed` for
+candidate sampling; the legacy `/process_frame` multipart endpoint is being
+phased out and is not used).
 
 Official RoboDojo-Sim protocol for this checkpoint (kept identical in MILE so
 our numbers are comparable to the leaderboard):
@@ -104,6 +128,14 @@ All hyper-parameters live in [`configs/default.yaml`](configs/default.yaml).
 ```bash
 # S1 — milestone banks (v1: official sub-step boundaries; v2: automatic cues)
 python -m mile.scripts.extract_milestones --use-official --demo-dir /path/to/demos
+
+# S2-prereq — demos -> per-trajectory .npz (run INSIDE the OpenDM container:
+# /v1/infer returns actions only, patch features need the in-process hook)
+python -m mile.scripts.prepare_latents --demo-dir /path/to/demos \
+       --out-dir data/robodojo_demos_latents --model-path <DM0.5 ckpt>
+#   run with --estimate-only first for the disk projection (~1.3 TiB for all
+#   3,500 demos at fp16); do NOT subsample frames — the WM window must stay
+#   exactly exec_horizon (25) real control steps.
 
 # S2 — train the latent world model + value head (1×4090, ~1–2 days)
 python -m mile.scripts.train_wm --config configs/default.yaml
@@ -142,10 +174,14 @@ mile/
 │   │   ├── scoring.py          #   J(c) verification scoring
 │   │   ├── stack.py            #   verified-milestone stack with snapshots
 │   │   ├── controller.py       #   MILE controller (Algorithm 1)
+│   │   ├── conformal.py        #   split-conformal threshold calibration
+│   │   ├── recovery.py         #   hindsight recovery buffer + distillation
 │   │   └── evaluate.py         #   RoboDojo evaluation protocol
 │   ├── base/dm05_client.py     # frozen DM0.5 client (HTTP) + feature hook
 │   ├── env/robodojo_env.py     # Isaac Lab wrapper: state save/restore
-│   └── scripts/                # S1–S4 entry points
+│   └── scripts/
+│       ├── prepare_latents.py  #   demos -> .npz (S2 prereq, in-container)
+│       └── extract_milestones / train_wm / calibrate / run_eval / run_rounds
 └── docs/SETUP_zh.md            # 中文部署与接口说明
     docs/CODE_GUIDE_zh.md       # 逐文件代码详解（中文）
 ```
