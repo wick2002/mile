@@ -4,6 +4,7 @@
 > 给冻结的 VLA（DM0.5 / π0）外挂"想象—验证—回退—自改进"闭环。
 > 配套文档：`ICML2027_VLA世界模型研究计划.md`、`MILE_技术设计文档.md`、`main.tex`、
 > `MILE_创新性与可行性评估.md`（投稿前评估）、`docs/CODE_GUIDE_zh.md`（逐文件说明）、
+> **`docs/DEPLOY_SERVER_zh.md`（从裸机到跑通的完整服务器部署手册，第一步看这个）**、
 > **`docs/DEPLOY_DM05_LOCAL_zh.md`（进程内不启服务部署 DM0.5，推荐）**。
 >
 > 本仓库在开发机（Windows）上只做语法检查；**实际运行请在 GPU 服务器**（Ubuntu 22.04 + RTX 4090/A100 + Docker + NVIDIA Container Toolkit）。
@@ -197,11 +198,14 @@ mile/
 │   │   ├── recovery.py                 # 恢复缓冲 + 价值头蒸馏
 │   │   └── evaluate.py                 # 评测循环（50 局/任务，标准 + 随机）
 │   ├── base/dm05_client.py             # /v1/infer 客户端 + 历史帧缓冲 + FeatureHook
+│   ├── base/dm05_local.py              # 进程内 DM0.5（不启服务，动作+特征一次前向）
 │   ├── env/robodojo_env.py             # Isaac Lab 封装（存档/读档）
 │   └── scripts/
+│       ├── check_env.py                # 上服务器第一跑：环境/路径/显存/磁盘自检
+│       ├── probe_dm05_local.py         # DM0.5 进程内冒烟（含候选多样性判定）
 │       ├── prepare_latents.py          # 示范 → npz（latents/actions/milestones/text_emb）
 │       └── {extract_milestones,train_wm,calibrate,run_eval,run_rounds}.py
-├── docs/{SETUP_zh.md, CODE_GUIDE_zh.md}
+├── docs/{SETUP_zh.md, CODE_GUIDE_zh.md, DEPLOY_DM05_LOCAL_zh.md, DEPLOY_SERVER_zh.md}
 ├── requirements.txt / pyproject.toml / LICENSE / .gitignore
 └── README.md                            # GitHub 英文自述
 ```
